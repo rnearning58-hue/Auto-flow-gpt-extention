@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Horror Prompt Automator</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">🎬 Horror Prompt Automator</div>
+      <button id="btn-settings" class="btn-header-settings" title="Settings">⚙️</button>
+    </header>
+
+    <!-- PAGE: Setup -->
+    <div id="page-setup" class="page active">
+      <div class="tabs">
+        <button class="tab active" data-tab="master">Master Prompt</button>
+        <button class="tab" data-tab="story">Story</button>
+        <button class="tab" data-tab="scenes">Scenes</button>
+      </div>
+
+      <div id="tab-master" class="tab-content active">
+        <label>Master Prompt (ChatGPT-এ প্রথমে পাঠানো হবে)</label>
+        <textarea id="master-prompt" placeholder="এখানে master prompt পেস্ট করুন..."></textarea>
+        <div class="hint">আপনার master prompt একবার সেট করুন, বারবার লাগবে না।</div>
+      </div>
+
+      <div id="tab-story" class="tab-content">
+        <label>Story (পুরো গল্প)</label>
+        <textarea id="story-text" placeholder="এখানে পুরো স্টোরি পেস্ট করুন..."></textarea>
+        <div class="hint">ChatGPT master prompt-এর পর স্টোরি চাইলে এটা পাঠানো হবে।</div>
+      </div>
+
+      <div id="tab-scenes" class="tab-content">
+        <label>Scenes (প্রতিটি লাইনে একটি সিন)</label>
+        <textarea id="scenes-text" placeholder="Scene 1: ...&#10;Scene 2: ...&#10;Scene 3: ..."></textarea>
+        <div class="hint">প্রতিটি সিন আলাদা লাইনে লিখুন। একটার পর একটা পাঠানো হবে।</div>
+        <div id="scene-count" class="scene-count"></div>
+      </div>
+
+      <button id="btn-save" class="btn btn-primary">💾 Save Settings</button>
+      <div id="save-status" class="save-status"></div>
+
+      <div class="divider"></div>
+
+      <button id="btn-start" class="btn btn-start">▶ ChatGPT-এ Start করুন</button>
+      <div class="hint center">ChatGPT tab খোলা থাকতে হবে</div>
+
+      <div class="divider"></div>
+
+      <button id="btn-open-saved" class="btn btn-saved-lib">📂 Saved Projects</button>
+      <button id="btn-open-flow" class="btn btn-flow-lib">🌊 Google Flow Automation</button>
+    </div>
+
+    <!-- PAGE: ChatGPT Running -->
+    <div id="page-running" class="page">
+      <div class="status-box">
+        <div id="status-icon" class="status-icon">⏳</div>
+        <div id="status-text" class="status-text">চলছে...</div>
+        <div id="status-step" class="status-step"></div>
+      </div>
+      <div id="progress-bar-wrap">
+        <div id="progress-bar"></div>
+      </div>
+      <div id="progress-label"></div>
+      <button id="btn-stop" class="btn btn-danger">⏹ Stop</button>
+    </div>
+
+    <!-- PAGE: Saved Projects List -->
+    <div id="page-saved-list" class="page">
+      <div class="page-topbar">
+        <button id="btn-back-from-list" class="btn-back">&#8592; Back</button>
+        <span class="topbar-title">📂 Saved Projects</span>
+        <button id="btn-import-project" class="btn-import-toggle">📥 Import</button>
+      </div>
+      <div id="import-panel" class="import-panel" style="display:none">
+        <textarea id="import-textarea" class="import-textarea" placeholder="Exported JSON এখানে paste করুন..."></textarea>
+        <div class="import-btn-row">
+          <button id="btn-import-confirm" class="btn-import-confirm">✔ Import করুন</button>
+          <button id="btn-import-cancel" class="btn-import-cancel">✕ বাতিল</button>
+        </div>
+      </div>
+      <div id="saved-projects-list"></div>
+      <div id="no-saved" class="no-saved" style="display:none">
+        <div class="no-saved-icon">📭</div>
+        <div class="no-saved-text">কোনো সেভ করা প্রজেক্ট নেই।</div>
+        <div class="hint center">Automation শেষ হলে স্বয়ংক্রিয়ভাবে সেভ হবে।</div>
+      </div>
+    </div>
+
+    <!-- PAGE: Project Detail (Scene Cards) -->
+    <div id="page-saved-detail" class="page">
+      <div class="page-topbar">
+        <button id="btn-back-from-detail" class="btn-back">&#8592; Back</button>
+        <div class="topbar-info">
+          <div id="detail-title" class="topbar-title-sm"></div>
+          <div id="detail-scene-count" class="topbar-subtitle"></div>
+        </div>
+        <button id="btn-export-project" class="btn-export-project">📋 Export</button>
+      </div>
+      <div id="scene-cards-list"></div>
+    </div>
+
+    <!-- PAGE: Google Flow -->
+    <div id="page-flow" class="page">
+      <div class="page-topbar">
+        <button id="btn-back-from-flow" class="btn-back">&#8592; Back</button>
+        <span class="topbar-title">🌊 Google Flow</span>
+      </div>
+
+      <!-- Flow mode tabs -->
+      <div class="flow-mode-tabs">
+        <button class="flow-mode-tab active" data-flow="image">📸 Image</button>
+        <button class="flow-mode-tab" data-flow="video">🎬 Video</button>
+      </div>
+
+      <!-- ── IMAGE TAB ── -->
+      <div id="flow-content-image" class="flow-content active">
+        <div class="source-section">
+          <div class="source-radios">
+            <label class="radio-opt">
+              <input type="radio" name="img-src" value="manual" checked> ✍️ Manual
+            </label>
+            <label class="radio-opt">
+              <input type="radio" name="img-src" value="project"> 📁 Project থেকে
+            </label>
+          </div>
+          <div id="img-project-row" class="project-row" style="display:none">
+            <select id="img-project-sel" class="flow-select">
+              <option value="">-- Project সিলেক্ট করুন --</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="img-prompt-list" class="flow-prompt-list"></div>
+
+        <div id="img-manual-add" class="add-row">
+          <button id="btn-add-img" class="btn-add-flow">＋ Prompt যোগ করুন</button>
+        </div>
+        <div class="flow-clear-row">
+          <button id="btn-clear-all-img" class="btn-clear-all">🗑️ সব মুছুন</button>
+        </div>
+
+        <div class="delay-section">
+          <span class="delay-lbl">⏱ প্রতি</span>
+          <input type="number" id="img-delay" class="delay-inp" value="45" min="5" max="600">
+          <span class="delay-lbl">সেকেন্ড পরপর</span>
+        </div>
+
+        <div class="flow-notice">⚠️ Google Flow tab খুলে Image mode সেট রাখুন</div>
+
+        <div class="flow-save-row">
+          <button id="btn-flow-save-img" class="btn-flow-save">💾 Save Settings</button>
+          <span id="flow-img-save-status" class="flow-save-status"></span>
+        </div>
+
+        <div id="flow-img-status-box" class="flow-status-box" style="display:none">
+          <div id="flow-img-status-text" class="flow-st-text"></div>
+          <div class="flow-prog-wrap"><div id="flow-img-prog-bar" class="flow-prog-bar"></div></div>
+          <div id="flow-img-prog-label" class="flow-prog-label"></div>
+        </div>
+
+        <div class="flow-btn-row">
+          <button id="btn-start-flow-img" class="btn btn-flow-start" data-running="false">▶ Start Automation</button>
+          <div id="flow-img-complete-msg" class="flow-complete-msg" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- ── VIDEO TAB ── -->
+      <div id="flow-content-video" class="flow-content">
+        <div class="source-section">
+          <div class="source-radios">
+            <label class="radio-opt">
+              <input type="radio" name="vid-src" value="manual" checked> ✍️ Manual
+            </label>
+            <label class="radio-opt">
+              <input type="radio" name="vid-src" value="project"> 📁 Project থেকে
+            </label>
+          </div>
+          <div id="vid-project-row" class="project-row" style="display:none">
+            <select id="vid-project-sel" class="flow-select">
+              <option value="">-- Project সিলেক্ট করুন --</option>
+            </select>
+            <div class="prompt-type-row">
+              <span class="type-lbl">Prompt:</span>
+              <label class="radio-opt">
+                <input type="radio" name="vid-type" value="video" checked> 🎬 Video Only
+              </label>
+              <label class="radio-opt">
+                <input type="radio" name="vid-type" value="both"> 📸🎬 Both
+              </label>
+            </div>
+            <div class="scene-filter-row">
+              <span class="type-lbl">🎯 Scene:</span>
+              <input type="text" id="vid-scene-filter" class="scene-filter-inp" placeholder="সব / 1,3,5 / 2-4">
+              <button id="btn-vid-filter-apply" class="btn-filter-apply">Load</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="vid-prompt-list" class="flow-prompt-list"></div>
+
+        <div id="vid-manual-add" class="add-row">
+          <button id="btn-add-vid" class="btn-add-flow">＋ Prompt যোগ করুন</button>
+        </div>
+        <div class="flow-clear-row">
+          <button id="btn-clear-all-vid" class="btn-clear-all">🗑️ সব মুছুন</button>
+        </div>
+
+        <div class="delay-section">
+          <span class="delay-lbl">⏱ প্রতি</span>
+          <input type="number" id="vid-delay" class="delay-inp" value="60" min="5" max="600">
+          <span class="delay-lbl">সেকেন্ড পরপর</span>
+        </div>
+
+        <div class="flow-notice">⚠️ Google Flow tab খুলে Video mode সেট রাখুন</div>
+
+        <div class="flow-save-row">
+          <button id="btn-flow-save-vid" class="btn-flow-save">💾 Save Settings</button>
+          <span id="flow-vid-save-status" class="flow-save-status"></span>
+        </div>
+
+        <div id="flow-vid-status-box" class="flow-status-box" style="display:none">
+          <div id="flow-vid-status-text" class="flow-st-text"></div>
+          <div class="flow-prog-wrap"><div id="flow-vid-prog-bar" class="flow-prog-bar"></div></div>
+          <div id="flow-vid-prog-label" class="flow-prog-label"></div>
+        </div>
+
+        <div class="flow-btn-row">
+          <button id="btn-start-flow-vid" class="btn btn-flow-start" data-running="false">▶ Start Automation</button>
+          <div id="flow-vid-complete-msg" class="flow-complete-msg" style="display:none"></div>
+        </div>
+      </div>
+
+    </div><!-- end page-flow -->
+
+    <!-- PAGE: Settings -->
+    <div id="page-settings" class="page">
+      <div class="page-topbar">
+        <button id="btn-back-from-settings" class="btn-back">&#8592; Back</button>
+        <span class="topbar-title">⚙️ Settings</span>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">🔔 Notification Sounds</div>
+        <div class="settings-hint">যেকোনো Audio ফাইল সাপোর্ট করে (MP3, WAV, OGG, AAC, M4A ইত্যাদি)</div>
+
+        <!-- Start Sound -->
+        <div class="audio-card">
+          <div class="audio-card-label">
+            <span class="audio-icon">▶️</span>
+            <div>
+              <div class="audio-card-title">Start Sound</div>
+              <div class="audio-card-desc">Automation শুরু হলে এই সাউন্ড বাজবে</div>
+            </div>
+          </div>
+          <div class="audio-status-row">
+            <div id="start-audio-name" class="audio-file-name">কোনো অডিও সেট করা নেই</div>
+            <div class="audio-action-row">
+              <button id="btn-preview-start" class="btn-audio-preview" style="display:none" title="Preview">▶</button>
+              <button id="btn-upload-start" class="btn-audio-upload">📂 Upload</button>
+              <button id="btn-remove-start" class="btn-audio-remove" style="display:none" title="Remove">✕</button>
+            </div>
+          </div>
+          <input type="file" id="file-start-audio" accept="audio/*" style="display:none">
+        </div>
+
+        <!-- Done Sound -->
+        <div class="audio-card">
+          <div class="audio-card-label">
+            <span class="audio-icon">✅</span>
+            <div>
+              <div class="audio-card-title">Complete Sound</div>
+              <div class="audio-card-desc">Automation সম্পন্ন হলে এই সাউন্ড বাজবে</div>
+            </div>
+          </div>
+          <div class="audio-status-row">
+            <div id="done-audio-name" class="audio-file-name">কোনো অডিও সেট করা নেই</div>
+            <div class="audio-action-row">
+              <button id="btn-preview-done" class="btn-audio-preview" style="display:none" title="Preview">▶</button>
+              <button id="btn-upload-done" class="btn-audio-upload">📂 Upload</button>
+              <button id="btn-remove-done" class="btn-audio-remove" style="display:none" title="Remove">✕</button>
+            </div>
+          </div>
+          <input type="file" id="file-done-audio" accept="audio/*" style="display:none">
+        </div>
+
+        <div id="settings-save-status" class="settings-save-status"></div>
+      </div>
+    </div><!-- end page-settings -->
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
