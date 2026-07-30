@@ -1333,12 +1333,6 @@ async function startAutomation() {
     return;
   }
 
-  // Home page-এ conversation input থাকে না — automation চালালে freeze হয়
-  const isHomePage = /^https:\/\/(chat\.openai\.com|chatgpt\.com)\/?(\?.*)?$/.test(url);
-  if (isHomePage) {
-    alert('⚠️ আপনি ChatGPT Home Page-এ আছেন!\n\nঅনুগ্রহ করে একটি নতুন Chat খুলুন (New Chat বা যেকোনো conversation-এ যান), তারপর আবার Start করুন।');
-    return;
-  }
 
   await chrome.storage.local.set({
     automationRunning: true,
