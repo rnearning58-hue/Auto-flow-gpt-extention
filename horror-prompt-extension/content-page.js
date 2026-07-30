@@ -24,21 +24,38 @@ async function _typeAndSend(text) {
   const el = await _findInput(15000);
   if (!el) throw new Error('ChatGPT input box পাওয়া যায়নি');
 
-  // Clear the input completely first
-  await _clearInput(el);
-  await _delay(200);
+  el.focus();
+  await _delay(300);
 
-  // Insert text — works in MAIN world with React contenteditable
-  document.execCommand('insertText', false, text);
-  await _delay(500);
+  // ── Step 1: Clear safely (no execCommand, no el.click — avoids React freeze) ──
+  _safeClear(el);
+  await _delay(250);
 
-  // Check if text was actually inserted
-  const typed = (el.innerText || el.textContent || '').trim();
-  if (!typed || typed.length < 2) {
-    // Fallback: clear again and use paste event
-    await _clearInput(el);
-    await _delay(200);
-    await _pasteText(el, text);
+  // ── Step 2: Insert via paste event (primary — handles large text without freezing) ──
+  let inserted = false;
+  try {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    await _delay(600);
+    inserted = (el.innerText || el.textContent || '').trim().length > 2;
+  } catch (_) {}
+
+  // ── Step 3: Fallback — execCommand insertText (for older ChatGPT builds) ──
+  if (!inserted) {
+    try {
+      document.execCommand('insertText', false, text);
+      await _delay(500);
+      inserted = (el.innerText || el.textContent || '').trim().length > 2;
+    } catch (_) {}
+  }
+
+  // ── Step 4: Last resort — direct textContent + React fiber trigger ──
+  if (!inserted) {
+    _safeClear(el);
+    await _delay(100);
+    el.textContent = text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
     await _delay(400);
   }
 
@@ -47,38 +64,21 @@ async function _typeAndSend(text) {
   return true;
 }
 
-async function _clearInput(el) {
-  el.focus();
-  await _delay(150);
-
-  // Select all and delete
-  const sel = window.getSelection();
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  sel.removeAllRanges();
-  sel.addRange(range);
-  await _delay(80);
-  document.execCommand('delete', false, null);
-  await _delay(100);
-
-  // Double-check: if still has content, clear innerHTML directly
-  if ((el.innerText || el.textContent || '').trim().length > 0) {
-    el.innerHTML = '';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    await _delay(100);
-  }
-}
-
-async function _pasteText(el, text) {
-  el.focus();
+// Clear contenteditable safely — patches removeChild to prevent React NotFoundError
+function _safeClear(el) {
   try {
-    const dt = new DataTransfer();
-    dt.setData('text/plain', text);
-    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-  } catch (e) {
-    document.execCommand('insertText', false, text);
+    const orig = el.removeChild.bind(el);
+    el.removeChild = function(child) {
+      try { return orig(child); } catch(e) { if (e.name === 'NotFoundError') return child; throw e; }
+    };
+    el.textContent = '';
+    setTimeout(() => { el.removeChild = orig; }, 2000);
+  } catch(_) {
+    el.innerHTML = '';
   }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
 }
+
 
 function _setReactValue(el, text) {
   try {
