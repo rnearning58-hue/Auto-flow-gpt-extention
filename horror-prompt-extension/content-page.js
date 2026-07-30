@@ -135,13 +135,23 @@ async function _clickSend() {
 }
 
 function _isStreaming() {
-  return !!(
-    document.querySelector('button[data-testid="stop-button"]') ||
-    document.querySelector('button[aria-label="Stop streaming"]') ||
-    document.querySelector('button[aria-label*="Stop"]') ||
-    document.querySelector('[class*="result-streaming"]') ||
-    document.querySelector('[data-testid="stop-button"]')
-  );
+  // Specific stop-button selectors used by ChatGPT during active generation
+  if (document.querySelector('button[data-testid="stop-button"]')) return true;
+  if (document.querySelector('[data-testid="stop-button"]')) return true;
+  if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
+  if (document.querySelector('button[aria-label="Stop generating"]')) return true;
+  if (document.querySelector('[class*="result-streaming"]')) return true;
+
+  // If the send button is present and enabled, ChatGPT is ready → not streaming
+  const sendBtn =
+    document.querySelector('button[data-testid="send-button"]') ||
+    document.querySelector('button[aria-label="Send prompt"]') ||
+    document.querySelector('button[aria-label="Send message"]');
+  if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
+    return false;
+  }
+
+  return false;
 }
 
 // Returns the total number of assistant reply messages in the DOM.

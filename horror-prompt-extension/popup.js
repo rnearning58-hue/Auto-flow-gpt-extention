@@ -1481,9 +1481,9 @@ function renderStatus(s, total) {
     case 'sending_master':      updateRunningStatus('📤', 'Master Prompt পাঠানো হচ্ছে...', 'Step 1', 0, total); break;
     case 'sending_story':       updateRunningStatus('📖', 'Story পাঠানো হচ্ছে...', 'Step 2', 0, total); break;
     case 'sending_scenes_list': updateRunningStatus('📋', 'Scene তালিকা পাঠানো হচ্ছে...', 'Step 3', 0, total); break;
-    case 'scene_sent':          updateRunningStatus('🎬', `Scene ${(s.sceneIndex||0)+1} পাঠানো হচ্ছে...`, `${(s.sceneIndex||0)+1} / ${total}`, s.sceneIndex||0, total); break;
+    case 'scene_sent': { const sn = _extractSceneNum(s.scene, (s.sceneIndex||0)+1); updateRunningStatus('🎬', `Scene ${sn} পাঠানো হচ্ছে...`, `${(s.sceneIndex||0)+1} / ${total}`, s.sceneIndex||0, total); break; }
     case 'waiting':             updateRunningStatus('⏳', 'ChatGPT reply-এর অপেক্ষায়...', s.detail || '', s.current||0, total); break;
-    case 'scene_done':          updateRunningStatus('✅', `Scene ${(s.sceneIndex||0)+1} সম্পন্ন!`, `${(s.sceneIndex||0)+1} / ${total} হয়েছে`, (s.sceneIndex||0)+1, total); break;
+    case 'scene_done': { const sn = _extractSceneNum(s.scene, (s.sceneIndex||0)+1); updateRunningStatus('✅', `Scene ${sn} সম্পন্ন!`, `${(s.sceneIndex||0)+1} / ${total} হয়েছে`, (s.sceneIndex||0)+1, total); break; }
     case 'all_done':            updateRunningStatus('🎉', 'সব সম্পন্ন!', `মোট ${total}টি সিন তৈরি`, total, total); break;
     case 'error':               updateRunningStatus('❌', 'Error!', s.message || '', 0, total); break;
   }
@@ -2347,24 +2347,30 @@ async function loadImgPromptsFromProject(projectId) {
   debouncedFlowSave();
 }
 
-function parseSceneFilter(filterStr, totalScenes) {
+// scenes: the full project.scenes array (objects with .sceneNumber)
+function parseSceneFilter(filterStr, scenes) {
   const s = (filterStr || '').trim().toLowerCase();
-  if (!s || s === 'all' || s === 'সব' || s === 'সব') return null;
-  const indices = new Set();
-  const parts = s.split(',');
-  for (const part of parts) {
+  if (!s || s === 'all' || s === 'সব') return null;
+
+  const requestedNums = new Set();
+  for (const part of s.split(',')) {
     const range = part.trim().match(/^(\d+)\s*-\s*(\d+)$/);
     if (range) {
       const from = parseInt(range[1]), to = parseInt(range[2]);
-      for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
-        if (i >= 1 && i <= totalScenes) indices.add(i - 1);
-      }
+      for (let n = Math.min(from, to); n <= Math.max(from, to); n++) requestedNums.add(n);
     } else {
       const n = parseInt(part.trim());
-      if (!isNaN(n) && n >= 1 && n <= totalScenes) indices.add(n - 1);
+      if (!isNaN(n)) requestedNums.add(n);
     }
   }
-  return indices.size > 0 ? [...indices].sort((a, b) => a - b) : null;
+  if (requestedNums.size === 0) return null;
+
+  // Match against actual sceneNumber stored on each scene object
+  const matched = [];
+  scenes.forEach((scene, i) => {
+    if (requestedNums.has(scene.sceneNumber)) matched.push(i);
+  });
+  return matched.length > 0 ? matched : null;
 }
 
 async function loadVidPromptsFromProject(projectId) {
@@ -2375,7 +2381,7 @@ async function loadVidPromptsFromProject(projectId) {
   document.getElementById('vid-prompt-list').innerHTML = '';
   const type = document.querySelector('input[name="vid-type"]:checked')?.value || 'video';
   const filterStr = document.getElementById('vid-scene-filter')?.value || '';
-  const indices = parseSceneFilter(filterStr, project.scenes.length);
+  const indices = parseSceneFilter(filterStr, project.scenes);
   const scenes = indices ? indices.map(i => project.scenes[i]) : project.scenes;
   if (type === 'both') {
     scenes.forEach(s => {
