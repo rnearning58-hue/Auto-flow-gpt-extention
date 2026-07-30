@@ -48,8 +48,6 @@ async function _typeAndSend(text) {
 }
 
 async function _clearInput(el) {
-  el.click();
-  await _delay(150);
   el.focus();
   await _delay(150);
 
