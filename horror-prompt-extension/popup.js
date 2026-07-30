@@ -1516,9 +1516,16 @@ function updateRunningStatus(icon, text, step, current, total) {
 
 // ── Saved Projects ─────────────────────────────────────────────────────────
 
-function parsePrompts(rawOutput) {
+function parsePrompts(rawOutput, outputMode) {
   if (!rawOutput) return { imagePrompt: '', videoPrompt: '' };
   const text = rawOutput.replace(/Copy code\r?\n?/gi, '');
+
+  // When mode is known, use it to assign a single block to the correct field
+  function assignSingle(block) {
+    if (outputMode === 'video') return { imagePrompt: '', videoPrompt: block };
+    if (outputMode === 'image') return { imagePrompt: block, videoPrompt: '' };
+    return { imagePrompt: block, videoPrompt: '' }; // default: treat as image
+  }
 
   const fencedRe = /```(?:json|JSON)?\s*\n?([\s\S]*?)```/g;
   const jsonFenced = [];
@@ -1528,13 +1535,13 @@ function parsePrompts(rawOutput) {
     if (c.includes('{') && c.includes('"')) jsonFenced.push(c);
   }
   if (jsonFenced.length >= 2) return { imagePrompt: jsonFenced[0], videoPrompt: jsonFenced[1] };
-  if (jsonFenced.length === 1) return { imagePrompt: jsonFenced[0], videoPrompt: '' };
+  if (jsonFenced.length === 1) return assignSingle(jsonFenced[0]);
 
   const jsonLabelRe = /(?:^|\n)json\s*\n(\{[\s\S]*?\n\})/g;
   const labelBlocks = [];
   while ((m = jsonLabelRe.exec(text)) !== null) labelBlocks.push(m[1].trim());
   if (labelBlocks.length >= 2) return { imagePrompt: labelBlocks[0], videoPrompt: labelBlocks[1] };
-  if (labelBlocks.length === 1) return { imagePrompt: labelBlocks[0], videoPrompt: '' };
+  if (labelBlocks.length === 1) return assignSingle(labelBlocks[0]);
 
   const lines = text.split('\n');
   let depth = 0, blockLines = [], inBlock = false;
@@ -1552,9 +1559,9 @@ function parsePrompts(rawOutput) {
     }
   }
   if (objBlocks.length >= 2) return { imagePrompt: objBlocks[0], videoPrompt: objBlocks[1] };
-  if (objBlocks.length === 1) return { imagePrompt: objBlocks[0], videoPrompt: '' };
+  if (objBlocks.length === 1) return assignSingle(objBlocks[0]);
 
-  return { imagePrompt: rawOutput, videoPrompt: '' };
+  return assignSingle(rawOutput);
 }
 
 function extractTitle(storyText) {
@@ -1577,7 +1584,7 @@ async function saveProject(results, storyText) {
   const now = new Date();
   const date = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}`;
   const scenes = results.map((r, i) => {
-    const { imagePrompt, videoPrompt } = parsePrompts(r.output || '');
+    const { imagePrompt, videoPrompt } = parsePrompts(r.output || '', outputMode);
     const sceneNumber = _extractSceneNum(r.scene || '', i + 1);
     return {
       scene: r.scene || '',
