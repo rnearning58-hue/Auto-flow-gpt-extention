@@ -70,11 +70,11 @@ async function runAutomation(masterPrompt, storyText, scenes) {
     await sendAndWaitForReply(storyText, 120);
     if (stopRequested) return;
 
-    // Step 3: Numbered scenes list
+    // Step 3: Numbered scenes list — preserve original scene numbers
     sendStatus('sending_scenes_list');
     await delay(1500);
     const numberedList = scenes
-      .map((s, i) => `${i + 1}. ${stripLeadingNumber(s)}`)
+      .map((s, i) => `${getSceneNumber(s, i + 1)}. ${stripLeadingNumber(s)}`)
       .join('\n');
     await sendAndWaitForReply(numberedList, 120);
     if (stopRequested) return;
@@ -83,6 +83,7 @@ async function runAutomation(masterPrompt, storyText, scenes) {
     for (let i = 0; i < scenes.length; i++) {
       if (stopRequested) return;
 
+      const sceneNum = getSceneNumber(scenes[i], i + 1);
       sendStatus('scene_sent', { sceneIndex: i, scene: scenes[i] });
       await delay(1500);
 
@@ -96,7 +97,7 @@ async function runAutomation(masterPrompt, storyText, scenes) {
           : -1;
 
         // Send scene number + full scene text (retry once on failure)
-        const sceneMsg = `${i + 1}. ${stripLeadingNumber(scenes[i])}`;
+        const sceneMsg = `${sceneNum}. ${stripLeadingNumber(scenes[i])}`;
         let sendRes = await callPage('typeAndSend', sceneMsg);
         if (!sendRes.ok) {
           // Wait a bit and retry once
@@ -106,7 +107,7 @@ async function runAutomation(masterPrompt, storyText, scenes) {
         }
 
         sendStatus('waiting', {
-          detail: `Scene ${i + 1}-এর output আসছে...`,
+          detail: `Scene ${sceneNum}-এর output আসছে...`,
           current: i
         });
 
@@ -209,6 +210,12 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 function stripLeadingNumber(s) {
   // Remove leading "1." or "1. " or "১." etc
   return s.trim().replace(/^[\d]+[\.\)]\s*/, '');
+}
+
+// Extract leading scene number (e.g. "40. সমুদ্র..." → 40), fallback if none
+function getSceneNumber(s, fallback) {
+  const m = s.trim().match(/^(\d+)[\.\)]\s*/);
+  return m ? parseInt(m[1]) : fallback;
 }
 
 function delay(ms) {

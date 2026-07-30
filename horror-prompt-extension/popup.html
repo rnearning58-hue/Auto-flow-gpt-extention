@@ -289,6 +289,29 @@
 
         <div id="settings-save-status" class="settings-save-status"></div>
       </div>
+
+      <!-- Output Mode -->
+      <div class="settings-section" style="margin-top:14px; padding-top:14px; border-top:1px solid #222;">
+        <div class="settings-section-title">📋 Output Mode</div>
+        <div class="settings-hint">ChatGPT থেকে কোন prompt সেভ করতে চান?</div>
+        <div class="output-mode-options">
+          <label class="radio-opt output-mode-opt">
+            <input type="radio" name="output-mode" value="both" checked>
+            <span>🖼️🎬 Image + Video (দুটোই)</span>
+          </label>
+          <label class="radio-opt output-mode-opt">
+            <input type="radio" name="output-mode" value="image">
+            <span>🖼️ শুধু Image Prompt</span>
+          </label>
+          <label class="radio-opt output-mode-opt">
+            <input type="radio" name="output-mode" value="video">
+            <span>🎬 শুধু Video Prompt</span>
+          </label>
+        </div>
+        <button id="btn-save-output-mode" class="btn btn-primary" style="margin-top:10px">💾 Output Mode সেভ করুন</button>
+        <div id="output-mode-status" class="settings-save-status"></div>
+      </div>
+
     </div><!-- end page-settings -->
 
   </div>

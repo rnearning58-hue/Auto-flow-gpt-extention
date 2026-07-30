@@ -79,6 +79,18 @@ textarea:focus { border-color: #ff4444; }
 .saved-project-meta { font-size: 10px; color: #666; margin-top: 3px; }
 .btn-delete-project { background: transparent; border: none; color: #555; font-size: 14px; cursor: pointer; padding: 4px 6px; border-radius: 4px; flex-shrink: 0; transition: all 0.2s; }
 .btn-delete-project:hover { background: #2a0a0a; color: #ff4444; }
+.btn-edit-project { background: transparent; border: none; color: #555; font-size: 14px; cursor: pointer; padding: 4px 6px; border-radius: 4px; flex-shrink: 0; transition: all 0.2s; }
+.btn-edit-project:hover { background: #1a2a1a; color: #66ff66; }
+.edit-title-input { flex: 1; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; padding: 3px 7px; font-size: 12px; min-width: 0; }
+.btn-edit-confirm { background: transparent; border: none; color: #66ff66; font-size: 13px; cursor: pointer; padding: 3px 5px; border-radius: 4px; flex-shrink: 0; }
+.btn-edit-confirm:hover { background: #1a2a1a; }
+.btn-edit-cancel { background: transparent; border: none; color: #888; font-size: 13px; cursor: pointer; padding: 3px 5px; border-radius: 4px; flex-shrink: 0; }
+.btn-edit-cancel:hover { background: #222; color: #ccc; }
+.output-mode-options { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.output-mode-opt { padding: 7px 10px; background: #111; border: 1px solid #252525; border-radius: 7px; transition: border-color 0.2s; }
+.output-mode-opt:hover { border-color: #333; }
+.output-mode-opt input[type="radio"] { accent-color: #ff6666; }
+.output-mode-opt span { font-size: 12px; color: #ccc; }
 .no-saved { text-align: center; padding: 40px 20px; }
 .no-saved-icon { font-size: 36px; margin-bottom: 10px; }
 .no-saved-text { font-size: 13px; color: #666; margin-bottom: 6px; }

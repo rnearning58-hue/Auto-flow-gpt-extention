@@ -1089,6 +1089,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupSettingsListeners();
   updateSceneCount();
   await loadAudioSettings();
+  await loadOutputMode();
   await checkRunningState();
   await checkFlowRunningState();
 });
@@ -1177,6 +1178,15 @@ function setupEventListeners() {
 function setupSettingsListeners() {
   _setupAudioSlot('start');
   _setupAudioSlot('done');
+
+  // Output Mode save
+  document.getElementById('btn-save-output-mode').addEventListener('click', async () => {
+    const mode = document.querySelector('input[name="output-mode"]:checked')?.value || 'both';
+    await chrome.storage.local.set({ outputMode: mode });
+    const el = document.getElementById('output-mode-status');
+    el.textContent = '✔ সেভ হয়েছে!';
+    setTimeout(() => { el.textContent = ''; }, 2000);
+  });
 }
 
 function _setupAudioSlot(type) {
@@ -1282,6 +1292,13 @@ async function loadAudioSettings() {
     _buildAudioEl('done', data.audioDoneData);
     _updateAudioUI('done', data.audioDoneName || 'done.mp3', true);
   }
+}
+
+async function loadOutputMode() {
+  const data = await chrome.storage.local.get('outputMode');
+  const mode = data.outputMode || 'both';
+  const r = document.querySelector(`input[name="output-mode"][value="${mode}"]`);
+  if (r) r.checked = true;
 }
 
 function playStartSound() {
@@ -1499,17 +1516,32 @@ function extractTitle(storyText) {
   return clean.slice(0, 55) || 'Untitled Project';
 }
 
+// Extract leading number from scene text, e.g. "40. সমুদ্র..." → 40
+function _extractSceneNum(text, fallback) {
+  const m = (text || '').trim().match(/^(\d+)[\.\)]\s*/);
+  return m ? parseInt(m[1]) : fallback;
+}
+
 async function saveProject(results, storyText) {
+  const stored = await chrome.storage.local.get(['savedProjects', 'outputMode']);
+  const outputMode = stored.outputMode || 'both';
+
   const title = extractTitle(storyText);
   const now = new Date();
   const date = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}`;
-  const scenes = results.map(r => {
+  const scenes = results.map((r, i) => {
     const { imagePrompt, videoPrompt } = parsePrompts(r.output || '');
-    return { scene: r.scene || '', imagePrompt, videoPrompt, rawOutput: r.output || '' };
+    const sceneNumber = _extractSceneNum(r.scene || '', i + 1);
+    return {
+      scene: r.scene || '',
+      sceneNumber,
+      imagePrompt: outputMode !== 'video' ? imagePrompt : '',
+      videoPrompt: outputMode !== 'image' ? videoPrompt : '',
+      rawOutput: r.output || ''
+    };
   });
   const project = { id: Date.now().toString(), title, date, sceneCount: scenes.length, scenes };
-  const data = await chrome.storage.local.get('savedProjects');
-  const saved = data.savedProjects || [];
+  const saved = stored.savedProjects || [];
   saved.unshift(project);
   await chrome.storage.local.set({ savedProjects: saved });
   return project;
@@ -1535,12 +1567,58 @@ function renderSavedList(projects) {
         <div class="saved-project-title">📁 ${escapeHtml(project.title)}</div>
         <div class="saved-project-meta">${project.sceneCount}টি সিন &bull; ${project.date}</div>
       </div>
+      <button class="btn-edit-project" title="নাম পরিবর্তন করুন">✏️</button>
       <button class="btn-delete-project" title="Delete">🗑️</button>`;
+
+    // Open detail on info click
     card.querySelector('.saved-project-info').addEventListener('click', async () => {
       const d = await chrome.storage.local.get('savedProjects');
       const p = (d.savedProjects || []).find(x => x.id === project.id);
       if (p) { renderProjectDetail(p); showPage('page-saved-detail'); }
     });
+
+    // ── Edit project name (inline) ──────────────────────────────
+    card.querySelector('.btn-edit-project').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const titleEl = card.querySelector('.saved-project-title');
+      const currentTitle = project.title;
+
+      // Replace title with inline input
+      titleEl.style.cssText = 'display:flex;align-items:center;gap:4px;overflow:visible;white-space:normal';
+      titleEl.innerHTML = `
+        <input class="edit-title-input" value="${escapeHtml(currentTitle)}">
+        <button class="btn-edit-confirm" title="সেভ">✔</button>
+        <button class="btn-edit-cancel" title="বাতিল">✕</button>`;
+      const input = titleEl.querySelector('.edit-title-input');
+      input.focus(); input.select();
+
+      const doSave = async () => {
+        const newTitle = input.value.trim();
+        if (!newTitle) return;
+        const d = await chrome.storage.local.get('savedProjects');
+        const updated = (d.savedProjects || []).map(p =>
+          p.id === project.id ? { ...p, title: newTitle } : p
+        );
+        await chrome.storage.local.set({ savedProjects: updated });
+        project.title = newTitle;
+        renderSavedList(updated);
+      };
+
+      const doCancel = () => {
+        titleEl.style.cssText = '';
+        titleEl.innerHTML = `📁 ${escapeHtml(currentTitle)}`;
+      };
+
+      titleEl.querySelector('.btn-edit-confirm').addEventListener('click', (e2) => { e2.stopPropagation(); doSave(); });
+      titleEl.querySelector('.btn-edit-cancel').addEventListener('click', (e2) => { e2.stopPropagation(); doCancel(); });
+      input.addEventListener('keydown', (e2) => {
+        if (e2.key === 'Enter') { e2.stopPropagation(); doSave(); }
+        if (e2.key === 'Escape') doCancel();
+      });
+      input.addEventListener('click', (e2) => e2.stopPropagation());
+    });
+
+    // ── Delete ──────────────────────────────────────────────────
     card.querySelector('.btn-delete-project').addEventListener('click', async (e) => {
       e.stopPropagation();
       if (confirm(`"${project.title}" ডিলিট করবেন?`)) {
@@ -1550,6 +1628,7 @@ function renderSavedList(projects) {
         renderSavedList(updated);
       }
     });
+
     list.appendChild(card);
   });
 }
@@ -1560,43 +1639,56 @@ function renderProjectDetail(project) {
   document.getElementById('detail-scene-count').textContent = `${project.sceneCount}টি সিন \u2022 ${project.date}`;
   const list = document.getElementById('scene-cards-list');
   list.innerHTML = '';
+  const SVG_COPY = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
   project.scenes.forEach((s, i) => {
+    // Use stored sceneNumber if available, else fall back to array index
+    const displayNum = (s.sceneNumber != null) ? s.sceneNumber : (i + 1);
+    const hasImg = !!s.imagePrompt;
+    const hasVid = !!s.videoPrompt;
+    const hasBoth = hasImg && hasVid;
+
     const card = document.createElement('div');
     card.className = 'scene-card';
-    card.innerHTML = `
-      <div class="scene-card-header">
-        <span class="scene-card-number">${i + 1}.</span>
-        <span class="scene-card-text">${escapeHtml(s.scene)}</span>
-        <button class="btn-copy-both" title="Copy All Prompts">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          Both
-        </button>
-      </div>
-      <div class="prompt-panels">
+
+    const bothBtn = hasBoth
+      ? `<button class="btn-copy-both" title="Copy All Prompts">${SVG_COPY} Both</button>`
+      : '';
+
+    const imgPanel = hasImg ? `
         <div class="prompt-panel image-panel">
           <div class="panel-header">
             <span class="panel-label">Image Prompt</span>
-            <button class="btn-copy-panel btn-copy-img">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Copy
-            </button>
+            <button class="btn-copy-panel btn-copy-img">${SVG_COPY} Copy</button>
           </div>
-          <div class="panel-content">${escapeHtml(s.imagePrompt || '—')}</div>
-        </div>
+          <div class="panel-content">${escapeHtml(s.imagePrompt)}</div>
+        </div>` : '';
+
+    const vidPanel = hasVid ? `
         <div class="prompt-panel video-panel">
           <div class="panel-header">
             <span class="panel-label">Video Prompt</span>
-            <button class="btn-copy-panel btn-copy-vid">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Copy
-            </button>
+            <button class="btn-copy-panel btn-copy-vid">${SVG_COPY} Copy</button>
           </div>
-          <div class="panel-content">${escapeHtml(s.videoPrompt || '—')}</div>
-        </div>
-      </div>`;
-    card.querySelector('.btn-copy-both').addEventListener('click', () => copyToClipboard(s.imagePrompt + '\n\n' + s.videoPrompt, card.querySelector('.btn-copy-both')));
-    card.querySelector('.btn-copy-img').addEventListener('click', () => copyToClipboard(s.imagePrompt || '', card.querySelector('.btn-copy-img')));
-    card.querySelector('.btn-copy-vid').addEventListener('click', () => copyToClipboard(s.videoPrompt || '', card.querySelector('.btn-copy-vid')));
+          <div class="panel-content">${escapeHtml(s.videoPrompt)}</div>
+        </div>` : '';
+
+    card.innerHTML = `
+      <div class="scene-card-header">
+        <span class="scene-card-number">${displayNum}.</span>
+        <span class="scene-card-text">${escapeHtml(s.scene)}</span>
+        ${bothBtn}
+      </div>
+      <div class="prompt-panels">${imgPanel}${vidPanel}</div>`;
+
+    if (hasBoth) {
+      card.querySelector('.btn-copy-both').addEventListener('click', () => copyToClipboard(s.imagePrompt + '\n\n' + s.videoPrompt, card.querySelector('.btn-copy-both')));
+    }
+    if (hasImg) {
+      card.querySelector('.btn-copy-img').addEventListener('click', () => copyToClipboard(s.imagePrompt, card.querySelector('.btn-copy-img')));
+    }
+    if (hasVid) {
+      card.querySelector('.btn-copy-vid').addEventListener('click', () => copyToClipboard(s.videoPrompt, card.querySelector('.btn-copy-vid')));
+    }
     list.appendChild(card);
   });
 }
