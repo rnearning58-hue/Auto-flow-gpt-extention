@@ -1848,6 +1848,13 @@ function setupFlowListeners() {
     else alert('আগে একটি Project সিলেক্ট করুন।');
   });
 
+  document.getElementById('vid-scene-filter').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('btn-vid-filter-apply').click();
+    }
+  });
+
   document.getElementById('img-delay').addEventListener('change', debouncedFlowSave);
   document.getElementById('vid-delay').addEventListener('change', debouncedFlowSave);
 
