@@ -1330,7 +1330,7 @@ async function saveSettings() {
 }
 
 async function startAutomation() {
-  const masterPrompt = document.getElementById('master-prompt').value.trim();
+  let masterPrompt = document.getElementById('master-prompt').value.trim();
   const storyText = document.getElementById('story-text').value.trim();
   const scenesText = document.getElementById('scenes-text').value.trim();
 
@@ -1342,6 +1342,53 @@ async function startAutomation() {
   if (scenes.length === 0) return alert('কোনো scene পাওয়া যায়নি!');
 
   await chrome.storage.local.set({ masterPrompt, storyText, scenesText });
+
+  // Apply output mode override so ChatGPT only generates what the user wants
+  const modeData = await chrome.storage.local.get('outputMode');
+  const outputMode = modeData.outputMode || 'both';
+  if (outputMode === 'video') {
+    masterPrompt += `
+
+━━━━━━━━━━━━━━━━━━
+OUTPUT MODE OVERRIDE
+━━━━━━━━━━━━━━━━━━
+
+CRITICAL: For every scene, output ONLY the Video Prompt.
+
+DO NOT output Image Prompt.
+DO NOT include the "## 🖼️ Image Prompt" section at all.
+
+Output format for each scene:
+
+## 🎥 Video Prompt
+
+\`\`\`json
+{...}
+\`\`\`
+
+Nothing else.`;
+  } else if (outputMode === 'image') {
+    masterPrompt += `
+
+━━━━━━━━━━━━━━━━━━
+OUTPUT MODE OVERRIDE
+━━━━━━━━━━━━━━━━━━
+
+CRITICAL: For every scene, output ONLY the Image Prompt.
+
+DO NOT output Video Prompt.
+DO NOT include the "## 🎥 Video Prompt" section at all.
+
+Output format for each scene:
+
+## 🖼️ Image Prompt
+
+\`\`\`json
+{...}
+\`\`\`
+
+Nothing else.`;
+  }
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = tab?.url || '';
