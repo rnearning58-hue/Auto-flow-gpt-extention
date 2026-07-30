@@ -2073,12 +2073,13 @@ async function flowRestoreState() {
 
 // ── Image prompt items ──────────────────────────────────────────────────────
 
-function imgAddItem(text = '') {
+function imgAddItem(text = '', sceneNumber = null) {
   const list = document.getElementById('img-prompt-list');
   const id   = `img-${++flowImgItemCounter}`;
   const item = document.createElement('div');
   item.className = 'flow-prompt-item';
   item.dataset.itemId = id;
+  if (sceneNumber != null) item.dataset.sceneNum = sceneNumber;
   item.innerHTML = `
     <div class="prompt-item-top">
       <span class="prompt-idx"></span>
@@ -2098,12 +2099,13 @@ function imgAddItem(text = '') {
 
 // ── Video prompt items ──────────────────────────────────────────────────────
 
-function vidAddItem(showImgAttach, text = '', label = '') {
+function vidAddItem(showImgAttach, text = '', label = '', sceneNumber = null) {
   const list = document.getElementById('vid-prompt-list');
   const id   = `vid-${++flowVidItemCounter}`;
   const item = document.createElement('div');
   item.className = 'flow-prompt-item';
   item.dataset.itemId = id;
+  if (sceneNumber != null) item.dataset.sceneNum = sceneNumber;
 
   const labelHtml = label
     ? `<span class="prompt-item-label ${label === 'IMG' ? 'label-img' : 'label-vid'}">${label}</span>`
@@ -2201,7 +2203,7 @@ function vidAddItem(showImgAttach, text = '', label = '') {
 function renumberList(listId) {
   document.querySelectorAll(`#${listId} .flow-prompt-item`).forEach((item, i) => {
     const idx = item.querySelector('.prompt-idx');
-    if (idx) idx.textContent = `${i + 1}.`;
+    if (idx) idx.textContent = item.dataset.sceneNum ? `${item.dataset.sceneNum}.` : `${i + 1}.`;
   });
 }
 
@@ -2334,7 +2336,7 @@ async function loadImgPromptsFromProject(projectId) {
   const project = (data.savedProjects || []).find(p => p.id === projectId);
   if (!project) return;
   document.getElementById('img-prompt-list').innerHTML = '';
-  project.scenes.forEach(s => imgAddItem(s.imagePrompt || ''));
+  project.scenes.forEach(s => imgAddItem(s.imagePrompt || '', s.sceneNumber ?? null));
   debouncedFlowSave();
 }
 
@@ -2371,10 +2373,10 @@ async function loadVidPromptsFromProject(projectId) {
   if (type === 'both') {
     scenes.forEach(s => {
       const combined = [s.imagePrompt || '', s.videoPrompt || ''].filter(Boolean).join('\n\n');
-      vidAddItem(true, combined);
+      vidAddItem(true, combined, '', s.sceneNumber ?? null);
     });
   } else {
-    scenes.forEach(s => vidAddItem(true, s.videoPrompt || ''));
+    scenes.forEach(s => vidAddItem(true, s.videoPrompt || '', '', s.sceneNumber ?? null));
   }
   debouncedFlowSave();
 }
