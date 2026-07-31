@@ -201,20 +201,38 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   }
 
   // ── Phase 2: Wait for streaming to fully END
+  // Two independent signals — whichever fires first wins:
+  //   A) isStreaming() returns false (stop-button gone, send-button visible)
+  //   B) Content stability — reply text unchanged for 2.5 s (most reliable)
+  let lastContent = null;
+  let stableStart = null;
+  const STABLE_MS = 2500; // reply must be unchanged for this long → done
+
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
+    // Signal A: DOM-based streaming indicator
     const s = await callPage('isStreaming', [], 10000);
-
-    // CRITICAL FIX: only treat as "stopped" when callPage succeeded (ok === true)
-    // AND streaming is actually false. A callPage timeout (ok === false) means
-    // the page was busy — do NOT interpret that as "streaming finished".
     if (s.ok === true && s.result === false) {
-      // Double-check after 1.2s to rule out brief UI flickers
-      await delay(1200);
+      // Double-check after 800 ms to rule out brief UI flickers
+      await delay(800);
       const s2 = await callPage('isStreaming', [], 10000);
       if (s2.ok === true && s2.result === false) {
-        return; // Confirmed: streaming fully ended
+        return; // Confirmed via stop-button/send-button detection
+      }
+    }
+
+    // Signal B: Content stability check
+    const r = await callPage('getLastReply', [], 10000);
+    if (r.ok && r.result) {
+      const content = r.result;
+      if (content !== lastContent) {
+        // Content changed — reset the stability timer
+        lastContent = content;
+        stableStart = Date.now();
+      } else if (stableStart !== null && Date.now() - stableStart >= STABLE_MS) {
+        // Content has been stable for STABLE_MS — streaming is done
+        return;
       }
     }
 
