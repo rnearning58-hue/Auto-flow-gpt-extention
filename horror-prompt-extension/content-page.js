@@ -81,32 +81,32 @@ async function _typeAndSend(text) {
         }
         if (_hasFileError()) return false;
 
-        const btn =
-          document.querySelector('button[data-testid="send-button"]') ||
-          document.querySelector('button[aria-label="Send prompt"]') ||
-          document.querySelector('button[aria-label="Send message"]') ||
-          document.querySelector('button[aria-label*="Send"]');
-        if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+        const btn = _findSendButton();
+        if (btn) {
           btn.click();
           return true;
         }
 
-        // After 5 s of no button, try Enter key as a fallback (ChatGPT sends on Enter).
-        // Only try once — if Enter worked, the page will start streaming; if not, keep polling.
+        // After 5 s of no button found, try Enter key + form submit as fallbacks.
+        // Only try once — if it worked ChatGPT will start streaming.
         if (!enterTried && Date.now() - (deadline - 30000) > 5000) {
           enterTried = true;
+          // Try Enter keydown on the input element
           el.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
             bubbles: true, cancelable: true
           }));
-          await _delay(1000);
-          // If Enter triggered a send the stop-button / streaming indicator will appear;
-          // return true to let the caller wait for the reply.
-          if (document.querySelector('button[data-testid="stop-button"]') ||
-              document.querySelector('button[aria-label="Stop streaming"]') ||
-              document.querySelector('button[aria-label="Stop generating"]')) {
-            return true;
+          await _delay(600);
+          // Also try submitting the enclosing form
+          const form = el.closest('form');
+          if (form) {
+            try { form.requestSubmit(); } catch (_) {
+              try { form.submit(); } catch (_2) {}
+            }
           }
+          await _delay(800);
+          // If streaming started, we're done
+          if (_isStreaming()) return true;
         }
 
         await _delay(400);
@@ -226,6 +226,43 @@ async function _findInput(timeout = 15000) {
   return null;
 }
 
+// Find the send button using multiple strategies.
+// ChatGPT changes its button attributes frequently; this tries every known approach.
+function _findSendButton() {
+  // Strategy 1: specific known attribute selectors (ordered by specificity)
+  const byAttr =
+    document.querySelector('button[data-testid="send-button"]') ||
+    document.querySelector('button[data-testid*="send"]') ||
+    document.querySelector('button[aria-label="Send prompt"]') ||
+    document.querySelector('button[aria-label="Send message"]') ||
+    document.querySelector('button[aria-label="Send"]') ||
+    document.querySelector('button[aria-label*="Send"]');
+  if (byAttr && !byAttr.disabled && byAttr.getAttribute('aria-disabled') !== 'true') {
+    return byAttr;
+  }
+
+  // Strategy 2: scan the composer area for the last enabled button with an SVG
+  // that is NOT a voice/mic/attach/stop/file/search button.
+  // The send button is always the rightmost (last) enabled icon button in the form.
+  const root =
+    document.querySelector('form') ||
+    document.querySelector('[class*="composer"]') ||
+    document.querySelector('main') ||
+    document.body;
+  const buttons = Array.from(root.querySelectorAll('button'));
+  const candidates = buttons.filter(btn => {
+    if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+    if (!btn.querySelector('svg')) return false; // send button always has an SVG icon
+    const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
+    const skip = ['attach', 'file', 'voice', 'mic', 'microphone', 'stop',
+                  'search', 'browse', 'photo', 'image', 'upload', 'tool'];
+    return !skip.some(w => label.includes(w) || testid.includes(w));
+  });
+  // The last remaining candidate is the send button
+  return candidates.length ? candidates[candidates.length - 1] : null;
+}
+
 // Returns true if the send button became enabled and was clicked.
 // Returns false if: (a) a file-card error/rejection was detected, or
 //                   (b) maxWaitMs elapsed without the button enabling.
@@ -236,18 +273,13 @@ async function _clickSend(maxWaitMs = 30000) {
     // Fast-fail: detect file-card rejection or upload error before polling the button
     if (_hasFileError()) return false;
 
-    const btn =
-      document.querySelector('button[data-testid="send-button"]') ||
-      document.querySelector('button[aria-label="Send prompt"]') ||
-      document.querySelector('button[aria-label="Send message"]') ||
-      document.querySelector('button[aria-label*="Send"]');
-    if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+    const btn = _findSendButton();
+    if (btn) {
       btn.click();
-      return true; // ✓ actually clicked an enabled button
+      return true; // ✓ clicked an enabled send button
     }
     await _delay(400);
   }
-  // Timed out — do NOT dispatch Enter as a fallback "send"; that would hide the failure.
   return false;
 }
 
@@ -302,13 +334,7 @@ function _isStreaming() {
   if (document.querySelector('[class*="result-streaming"]')) return true;
 
   // If the send button is present and enabled, ChatGPT is ready → not streaming
-  const sendBtn =
-    document.querySelector('button[data-testid="send-button"]') ||
-    document.querySelector('button[aria-label="Send prompt"]') ||
-    document.querySelector('button[aria-label="Send message"]');
-  if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
-    return false;
-  }
+  if (_findSendButton()) return false;
 
   return false;
 }
