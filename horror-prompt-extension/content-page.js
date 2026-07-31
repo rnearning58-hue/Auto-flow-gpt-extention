@@ -64,12 +64,13 @@ async function _typeAndSend(text) {
     if ((el.innerText || el.textContent || '').trim().length > 2) {
       // Fire an input event so React registers the pasted content and enables Send
       el.dispatchEvent(new Event('input', { bubbles: true }));
-      await _delay(300);
+      await _delay(500);
 
       // Poll for the send button, but ALSO watch for a late file-card conversion.
       // ChatGPT sometimes shows text briefly then converts it into a file attachment
       // a second or two after the paste — if that happens, switch to file-upload mode.
       const deadline = Date.now() + 30000;
+      let enterTried = false;
       while (Date.now() < deadline) {
         if (_hasFileAttachment()) {
           // Late conversion: text became a file card — handle it properly
@@ -79,6 +80,7 @@ async function _typeAndSend(text) {
           return true;
         }
         if (_hasFileError()) return false;
+
         const btn =
           document.querySelector('button[data-testid="send-button"]') ||
           document.querySelector('button[aria-label="Send prompt"]') ||
@@ -88,6 +90,25 @@ async function _typeAndSend(text) {
           btn.click();
           return true;
         }
+
+        // After 5 s of no button, try Enter key as a fallback (ChatGPT sends on Enter).
+        // Only try once — if Enter worked, the page will start streaming; if not, keep polling.
+        if (!enterTried && Date.now() - (deadline - 30000) > 5000) {
+          enterTried = true;
+          el.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            bubbles: true, cancelable: true
+          }));
+          await _delay(1000);
+          // If Enter triggered a send the stop-button / streaming indicator will appear;
+          // return true to let the caller wait for the reply.
+          if (document.querySelector('button[data-testid="stop-button"]') ||
+              document.querySelector('button[aria-label="Stop streaming"]') ||
+              document.querySelector('button[aria-label="Stop generating"]')) {
+            return true;
+          }
+        }
+
         await _delay(400);
       }
       throw new Error('Send বাটন সক্রিয় হয়নি — ChatGPT প্রস্তুত নয়');
@@ -144,12 +165,14 @@ function _hasFileAttachment() {
         return true;
       }
     }
-    // Secondary signals: generic file/attachment card selectors
+    // Secondary signals: specific file-card selectors only.
+    // Intentionally avoid broad selectors like [data-testid*="file"] or [class*="attachment"]
+    // because those match ChatGPT's own file-upload (+) button, causing false positives.
     return !!(
-      root.querySelector('[data-testid*="file"]') ||
       root.querySelector('[class*="FileCard"]') ||
       root.querySelector('[class*="file-card"]') ||
-      root.querySelector('[class*="attachment"]')
+      root.querySelector('[data-testid="file-attachment"]') ||
+      root.querySelector('[data-testid*="attachment-card"]')
     );
   } catch (_) {
     return false;
