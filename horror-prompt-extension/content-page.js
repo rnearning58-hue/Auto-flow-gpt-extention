@@ -64,16 +64,15 @@ async function _typeAndSend(text) {
     if ((el.innerText || el.textContent || '').trim().length > 2) {
       // Fire an input event so React registers the pasted content and enables Send
       el.dispatchEvent(new Event('input', { bubbles: true }));
-      await _delay(500);
+      await _delay(800);
 
-      // Poll for the send button, but ALSO watch for a late file-card conversion.
-      // ChatGPT sometimes shows text briefly then converts it into a file attachment
-      // a second or two after the paste — if that happens, switch to file-upload mode.
+      // Send strategy: every iteration tries BOTH the send button AND the Enter key.
+      // Enter key is the most reliable because it's what a human presses — tried
+      // immediately rather than waiting as a last resort.
       const deadline = Date.now() + 30000;
-      let enterTried = false;
       while (Date.now() < deadline) {
+        // Switch to file-upload mode if ChatGPT converted the text to a card
         if (_hasFileAttachment()) {
-          // Late conversion: text became a file card — handle it properly
           _sendPageStatus('file_uploading');
           const fileSent = await _clickSend(600000);
           if (!fileSent) throw new Error('ফাইল আপলোড ব্যর্থ হয়েছে বা ChatGPT প্রত্যাখ্যান করেছে');
@@ -81,35 +80,22 @@ async function _typeAndSend(text) {
         }
         if (_hasFileError()) return false;
 
+        // Attempt 1: click the send button if found
         const btn = _findSendButton();
         if (btn) {
           btn.click();
           return true;
         }
 
-        // After 5 s of no button found, try Enter key + form submit as fallbacks.
-        // Only try once — if it worked ChatGPT will start streaming.
-        if (!enterTried && Date.now() - (deadline - 30000) > 5000) {
-          enterTried = true;
-          // Try Enter keydown on the input element
-          el.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-            bubbles: true, cancelable: true
-          }));
-          await _delay(600);
-          // Also try submitting the enclosing form
-          const form = el.closest('form');
-          if (form) {
-            try { form.requestSubmit(); } catch (_) {
-              try { form.submit(); } catch (_2) {}
-            }
-          }
-          await _delay(800);
-          // If streaming started, we're done
-          if (_isStreaming()) return true;
-        }
+        // Attempt 2: simulate Enter key press (keydown + keypress + keyup)
+        // This mirrors exactly what happens when a user presses Enter on the keyboard.
+        _pressEnter(el);
+        await _delay(700);
 
-        await _delay(400);
+        // If ChatGPT started streaming, the Enter key worked — return success
+        if (_isStreaming()) return true;
+
+        await _delay(300);
       }
       throw new Error('Send বাটন সক্রিয় হয়নি — ChatGPT প্রস্তুত নয়');
     }
@@ -354,6 +340,21 @@ function _getLastReply() {
     last.querySelector('[class*="markdown"]') ||
     last.querySelector('.markdown');
   return ((prose || last).innerText || '').trim() || null;
+}
+
+// Simulate a full keyboard Enter press (keydown → keypress → keyup) on the
+// input element. This mirrors exactly what happens when the user presses Enter,
+// which is the most reliable way to trigger ChatGPT's send action regardless
+// of which send-button selector is active.
+function _pressEnter(el) {
+  const opts = {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    bubbles: true, cancelable: true
+  };
+  el.dispatchEvent(new KeyboardEvent('keydown',  opts));
+  el.dispatchEvent(new KeyboardEvent('keypress', opts));
+  el.dispatchEvent(new KeyboardEvent('keyup',    opts));
 }
 
 function _delay(ms) {
