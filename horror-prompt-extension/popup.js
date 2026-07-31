@@ -1479,6 +1479,7 @@ async function handleAllDone(results) {
 function renderStatus(s, total) {
   switch (s.status) {
     case 'sending_master':      updateRunningStatus('📤', 'Master Prompt পাঠানো হচ্ছে...', 'Step 1', 0, total); break;
+    case 'file_uploading':      updateRunningStatus('📎', 'ফাইল আপলোড হচ্ছে, অপেক্ষা করুন...', 'Step 1', 0, total); break;
     case 'sending_story':       updateRunningStatus('📖', 'Story পাঠানো হচ্ছে...', 'Step 2', 0, total); break;
     case 'sending_scenes_list': updateRunningStatus('📋', 'Scene তালিকা পাঠানো হচ্ছে...', 'Step 3', 0, total); break;
     case 'scene_sent': { const sn = _extractSceneNum(s.scene, (s.sceneIndex||0)+1); updateRunningStatus('🎬', `Scene ${sn} পাঠানো হচ্ছে...`, `${(s.sceneIndex||0)+1} / ${total}`, s.sceneIndex||0, total); break; }

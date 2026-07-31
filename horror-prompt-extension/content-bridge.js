@@ -13,6 +13,17 @@ let reqCounter = 0;
 // Listen for responses from MAIN world (content-page.js)
 window.addEventListener('message', (event) => {
   if (!event.data || event.data.hpaSource !== 'main') return;
+
+  // ── Intermediate status updates (e.g. file_uploading) ──
+  // content-page.js sends { hpaSource:'main', type:'STATUS', status:'...' }
+  // outside the normal RPC channel so the popup can show real-time state.
+  if (event.data.type === 'STATUS') {
+    const { type, hpaSource, ...rest } = event.data;
+    sendStatus(rest.status, rest);
+    return;
+  }
+
+  // ── Normal RPC reply ──
   const { id, result, error, ok } = event.data;
   const resolve = pending.get(id);
   if (resolve) {
@@ -21,19 +32,23 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// RPC: call a function in MAIN world, wait for result
-function callPage(fn, ...args) {
+// RPC: call a function in MAIN world, wait for result.
+// argsArray: arguments to pass to the page-side function (as an array).
+// timeoutMs: how long to wait before giving up. Use a long value for operations
+//   that may block (e.g. typeAndSend during a file upload) so the bridge never
+//   cancels a still-running page-side operation and triggers a spurious retry.
+function callPage(fn, argsArray = [], timeoutMs = 30000) {
   return new Promise((resolve) => {
     const id = ++reqCounter;
     pending.set(id, resolve);
-    window.postMessage({ hpaSource: 'isolated', id, fn, args }, '*');
+    window.postMessage({ hpaSource: 'isolated', id, fn, args: argsArray }, '*');
     setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
         // ok: false means timeout — NOT the same as "streaming stopped"
         resolve({ ok: false, error: 'Timeout: ' + fn, result: undefined });
       }
-    }, 30000);
+    }, timeoutMs);
   });
 }
 
@@ -91,18 +106,20 @@ async function runAutomation(masterPrompt, storyText, scenes) {
 
       try {
         // ── Get reply count BEFORE sending — so we can verify a NEW reply appeared
-        const beforeCountRes = await callPage('getReplyCount');
+        const beforeCountRes = await callPage('getReplyCount', [], 10000);
         const beforeCount = (beforeCountRes.ok && beforeCountRes.result != null)
           ? beforeCountRes.result
           : -1;
 
-        // Send scene number + full scene text (retry once on failure)
+        // Send scene number + full scene text.
+        // Use a 12-minute RPC timeout (> the 10-min page-side _clickSend wait) so the
+        // bridge never cancels a still-running upload and triggers a spurious retry.
         const sceneMsg = `${sceneNum}. ${stripLeadingNumber(scenes[i])}`;
-        let sendRes = await callPage('typeAndSend', sceneMsg);
+        let sendRes = await callPage('typeAndSend', [sceneMsg], 720000);
         if (!sendRes.ok) {
-          // Wait a bit and retry once
+          // The page-side _typeAndSend truly failed (not still in progress) — retry once.
           await delay(2000);
-          sendRes = await callPage('typeAndSend', sceneMsg);
+          sendRes = await callPage('typeAndSend', [sceneMsg], 720000);
           if (!sendRes.ok) throw new Error(sendRes.error || 'Message পাঠানো যায়নি');
         }
 
@@ -115,7 +132,7 @@ async function runAutomation(masterPrompt, storyText, scenes) {
         await waitForNewReplyComplete(beforeCount, 210);
         if (stopRequested) return;
 
-        const replyRes = await callPage('getLastReply');
+        const replyRes = await callPage('getLastReply', [], 10000);
         output = (replyRes.ok && replyRes.result) ? replyRes.result : '';
 
       } catch (sceneErr) {
@@ -141,12 +158,14 @@ async function runAutomation(masterPrompt, storyText, scenes) {
 // Type text into chatbox AND send, then wait for full reply
 async function sendAndWaitForReply(text, timeoutSec = 90) {
   // Get current reply count so we can detect the new reply
-  const beforeCountRes = await callPage('getReplyCount');
+  const beforeCountRes = await callPage('getReplyCount', [], 10000);
   const beforeCount = (beforeCountRes.ok && beforeCountRes.result != null)
     ? beforeCountRes.result
     : -1;
 
-  const res = await callPage('typeAndSend', text);
+  // 12-minute RPC timeout — must exceed the 10-min page-side _clickSend wait so the
+  // bridge never cancels a still-running file upload and reports a false failure.
+  const res = await callPage('typeAndSend', [text], 720000);
   if (!res.ok) throw new Error(res.error || 'Message পাঠানো যায়নি');
   await waitForNewReplyComplete(beforeCount, timeoutSec);
 }
@@ -165,7 +184,7 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 
   while (Date.now() < newReplyDeadline) {
     if (stopRequested) return;
-    const countRes = await callPage('getReplyCount');
+    const countRes = await callPage('getReplyCount', [], 10000);
     if (countRes.ok && countRes.result != null && countRes.result > beforeCount) {
       newReplyAppeared = true;
       break;
@@ -185,7 +204,7 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
-    const s = await callPage('isStreaming');
+    const s = await callPage('isStreaming', [], 10000);
 
     // CRITICAL FIX: only treat as "stopped" when callPage succeeded (ok === true)
     // AND streaming is actually false. A callPage timeout (ok === false) means
@@ -193,7 +212,7 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
     if (s.ok === true && s.result === false) {
       // Double-check after 1.2s to rule out brief UI flickers
       await delay(1200);
-      const s2 = await callPage('isStreaming');
+      const s2 = await callPage('isStreaming', [], 10000);
       if (s2.ok === true && s2.result === false) {
         return; // Confirmed: streaming fully ended
       }
