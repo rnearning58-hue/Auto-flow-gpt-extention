@@ -48,14 +48,9 @@ async function _typeAndSend(text) {
     // Give ChatGPT time to process the paste (text insertion OR file conversion)
     await _delay(1000);
 
-    // ── Case A: Text landed in the editor as normal text ──
-    if ((el.innerText || el.textContent || '').trim().length > 2) {
-      const sent = await _clickSend(30000);
-      if (!sent) throw new Error('Send বাটন সক্রিয় হয়নি — ChatGPT প্রস্তুত নয়');
-      return true;
-    }
-
     // ── Case B: ChatGPT converted the text into a file attachment card ──
+    // Check this FIRST — file conversion takes priority because it needs a much
+    // longer send timeout (upload can take minutes).
     // DO NOT run any further text-injection fallbacks — they interfere with the
     // file upload and cause the page to freeze.
     if (_hasFileAttachment()) {
@@ -63,6 +58,39 @@ async function _typeAndSend(text) {
       const sent = await _clickSend(600000); // wait (no fixed time) for upload + button
       if (!sent) throw new Error('ফাইল আপলোড ব্যর্থ হয়েছে বা ChatGPT প্রত্যাখ্যান করেছে');
       return true;
+    }
+
+    // ── Case A: Text landed in the editor as normal text ──
+    if ((el.innerText || el.textContent || '').trim().length > 2) {
+      // Fire an input event so React registers the pasted content and enables Send
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      await _delay(300);
+
+      // Poll for the send button, but ALSO watch for a late file-card conversion.
+      // ChatGPT sometimes shows text briefly then converts it into a file attachment
+      // a second or two after the paste — if that happens, switch to file-upload mode.
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        if (_hasFileAttachment()) {
+          // Late conversion: text became a file card — handle it properly
+          _sendPageStatus('file_uploading');
+          const fileSent = await _clickSend(600000);
+          if (!fileSent) throw new Error('ফাইল আপলোড ব্যর্থ হয়েছে বা ChatGPT প্রত্যাখ্যান করেছে');
+          return true;
+        }
+        if (_hasFileError()) return false;
+        const btn =
+          document.querySelector('button[data-testid="send-button"]') ||
+          document.querySelector('button[aria-label="Send prompt"]') ||
+          document.querySelector('button[aria-label="Send message"]') ||
+          document.querySelector('button[aria-label*="Send"]');
+        if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+          btn.click();
+          return true;
+        }
+        await _delay(400);
+      }
+      throw new Error('Send বাটন সক্রিয় হয়নি — ChatGPT প্রস্তুত নয়');
     }
 
     // Paste dispatched but produced neither text nor a file card — fall through to alternatives
