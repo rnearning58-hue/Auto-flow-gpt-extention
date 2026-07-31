@@ -78,7 +78,9 @@ async function _typeAndSend(text) {
           if (!fileSent) throw new Error('ফাইল আপলোড ব্যর্থ হয়েছে বা ChatGPT প্রত্যাখ্যান করেছে');
           return true;
         }
-        if (_hasFileError()) return false;
+        // Note: _hasFileError() is intentionally NOT checked here.
+        // In text mode (Case A) there is no file card, so a false positive would
+        // silently return false and let the automation skip this message entirely.
 
         // Attempt 1: click the send button if found
         const btn = _findSendButton();
@@ -227,26 +229,40 @@ function _findSendButton() {
     return byAttr;
   }
 
-  // Strategy 2: scan the composer area for the last enabled button with an SVG
-  // that is NOT a voice/mic/attach/stop/file/search button.
-  // The send button is always the rightmost (last) enabled icon button in the form.
-  const root =
-    document.querySelector('form') ||
-    document.querySelector('[class*="composer"]') ||
-    document.querySelector('main') ||
-    document.body;
-  const buttons = Array.from(root.querySelectorAll('button'));
-  const candidates = buttons.filter(btn => {
-    if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
-    if (!btn.querySelector('svg')) return false; // send button always has an SVG icon
-    const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-    const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
-    const skip = ['attach', 'file', 'voice', 'mic', 'microphone', 'stop',
-                  'search', 'browse', 'photo', 'image', 'upload', 'tool'];
-    return !skip.some(w => label.includes(w) || testid.includes(w));
-  });
-  // The last remaining candidate is the send button
-  return candidates.length ? candidates[candidates.length - 1] : null;
+  // Strategy 2: walk UP from the text input to find the send button.
+  // Scanning the whole page/form is unreliable on ChatGPT's home page (many stray
+  // buttons with SVGs pass the filter). Instead, start from the input element itself
+  // and expand outward — the send button is always in the same tight container as
+  // the input area, never far away in the page hierarchy.
+  const input =
+    document.querySelector('#prompt-textarea') ||
+    document.querySelector('div[contenteditable="true"][id*="prompt"]') ||
+    document.querySelector('div[contenteditable="true"].ProseMirror') ||
+    document.querySelector('div[contenteditable="true"]');
+  if (!input) return null;
+
+  const skip = ['attach', 'file', 'voice', 'mic', 'microphone',
+                'stop', 'search', 'browse', 'photo', 'image', 'upload', 'tool'];
+
+  // Walk up at most 8 levels from the input, find the first ancestor that contains
+  // exactly the send button (after filtering out known non-send buttons).
+  let container = input.parentElement;
+  for (let depth = 0; depth < 8 && container && container !== document.body; depth++) {
+    const buttons = Array.from(container.querySelectorAll('button'));
+    const candidates = buttons.filter(btn => {
+      if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+      if (!btn.querySelector('svg')) return false;
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
+      return !skip.some(w => label.includes(w) || testid.includes(w));
+    });
+    if (candidates.length >= 1) {
+      // Take the last candidate (send button is the rightmost icon button)
+      return candidates[candidates.length - 1];
+    }
+    container = container.parentElement;
+  }
+  return null;
 }
 
 // Returns true if the send button became enabled and was clicked.
@@ -342,19 +358,30 @@ function _getLastReply() {
   return ((prose || last).innerText || '').trim() || null;
 }
 
-// Simulate a full keyboard Enter press (keydown → keypress → keyup) on the
-// input element. This mirrors exactly what happens when the user presses Enter,
-// which is the most reliable way to trigger ChatGPT's send action regardless
-// of which send-button selector is active.
+// Simulate a keyboard Enter press to trigger ChatGPT's send action.
+// Dispatches on BOTH the form and the input element so the event reaches
+// ChatGPT's send handler regardless of where it is attached.
+// Dispatching on the form first bypasses ProseMirror's keymap (which would
+// otherwise intercept Enter on the contenteditable and insert a newline).
 function _pressEnter(el) {
   const opts = {
     key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
     shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     bubbles: true, cancelable: true
   };
+  // 1. Form level — bypasses ProseMirror, reaches ChatGPT's submit handler
+  const form = el.closest('form') || document.querySelector('form');
+  if (form) {
+    form.dispatchEvent(new KeyboardEvent('keydown',  opts));
+    form.dispatchEvent(new KeyboardEvent('keypress', opts));
+    form.dispatchEvent(new KeyboardEvent('keyup',    opts));
+  }
+  // 2. Input element level — covers cases where the handler IS on the editor
   el.dispatchEvent(new KeyboardEvent('keydown',  opts));
   el.dispatchEvent(new KeyboardEvent('keypress', opts));
   el.dispatchEvent(new KeyboardEvent('keyup',    opts));
+  // 3. Document level — catches any global keyboard shortcut listeners
+  document.dispatchEvent(new KeyboardEvent('keydown',  { ...opts, bubbles: false }));
 }
 
 function _delay(ms) {
