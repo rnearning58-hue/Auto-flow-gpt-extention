@@ -229,6 +229,12 @@ function _findSendButton() {
     return byAttr;
   }
 
+  // Strategy 2 is SKIPPED when a file attachment card is present.
+  // During file upload the send button is disabled, so any other enabled SVG button
+  // in the composer (e.g. "Show in text field") would be returned by mistake.
+  // In that state, callers must wait for the send button to enable via Strategy 1.
+  if (_hasFileAttachment()) return null;
+
   // Strategy 2: walk UP from the text input to find the send button.
   // Scanning the whole page/form is unreliable on ChatGPT's home page (many stray
   // buttons with SVGs pass the filter). Instead, start from the input element itself
