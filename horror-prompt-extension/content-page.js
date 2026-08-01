@@ -248,8 +248,12 @@ function _findSendButton() {
     document.querySelector('div[contenteditable="true"]');
   if (!input) return null;
 
+  // Keywords checked against aria-label AND data-testid — any match skips the button.
+  // 'speech', 'record', 'audio', 'dictate' cover the voice-input button variants
+  // ChatGPT uses; without them the voice button (🎤) can be mistaken for the send button.
   const skip = ['attach', 'file', 'voice', 'mic', 'microphone',
-                'stop', 'search', 'browse', 'photo', 'image', 'upload', 'tool'];
+                'stop', 'search', 'browse', 'photo', 'image', 'upload', 'tool',
+                'speech', 'record', 'audio', 'dictate'];
 
   // Walk up at most 8 levels from the input, find the first ancestor that contains
   // exactly the send button (after filtering out known non-send buttons).

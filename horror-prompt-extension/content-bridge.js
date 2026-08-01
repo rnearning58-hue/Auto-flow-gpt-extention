@@ -178,26 +178,40 @@ async function sendAndWaitForReply(text, timeoutSec = 90) {
 async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   const totalDeadline = Date.now() + timeoutSec * 1000;
 
-  // ── Phase 1: Wait for a NEW reply message to appear in the DOM (up to 35s)
-  const newReplyDeadline = Date.now() + 35000;
+  // ── Phase 1: Wait for a NEW reply message to appear in the DOM (up to 30s)
+  // Detection method: reply count increases OR streaming starts (stop-button appears).
+  // NOTE: In long conversations (40+ messages) ChatGPT virtualizes old DOM nodes, so
+  // the reply count may NOT increase even when a new reply appears. We fall through to
+  // Phase 2 in that case rather than returning early — Phase 2's content-stability
+  // check will still fire correctly once the new reply's text stabilises.
+  const newReplyDeadline = Date.now() + 30000;
   let newReplyAppeared = false;
 
   while (Date.now() < newReplyDeadline) {
     if (stopRequested) return;
-    const countRes = await callPage('getReplyCount', [], 10000);
+
+    // Primary: count increased → new reply in DOM
+    const countRes = await callPage('getReplyCount', [], 8000);
     if (countRes.ok && countRes.result != null && countRes.result > beforeCount) {
       newReplyAppeared = true;
       break;
     }
+
+    // Secondary: stop-button appeared → ChatGPT started streaming (count may be stale)
+    const streamRes = await callPage('isStreaming', [], 8000);
+    if (streamRes.ok && streamRes.result === true) {
+      newReplyAppeared = true;
+      break;
+    }
+
     await delay(350);
   }
 
   if (!newReplyAppeared) {
-    // No new reply detected — ChatGPT may have responded instantly (count didn't change
-    // because we started polling after it already appeared) OR there's a real failure.
-    // Either way, wait a few seconds and continue — don't skip the scene.
-    await delay(4000);
-    return;
+    // Neither signal fired — long conversation virtualisation likely caused count to stall.
+    // Do NOT return here: fall through to Phase 2 so content-stability still runs.
+    // A short pause lets ChatGPT finish any pending render before we start polling text.
+    await delay(3000);
   }
 
   // ── Phase 2: Wait for streaming to fully END
