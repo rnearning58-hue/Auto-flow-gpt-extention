@@ -10,10 +10,11 @@ window.addEventListener('message', async (event) => {
   const { id, fn, args } = event.data;
   try {
     let result;
-    if      (fn === 'typeAndSend')  result = await _typeAndSend(args[0]);
-    else if (fn === 'isStreaming')  result = _isStreaming();
-    else if (fn === 'getLastReply') result = _getLastReply();
-    else if (fn === 'getReplyCount') result = _getReplyCount();
+    if      (fn === 'typeAndSend')    result = await _typeAndSend(args[0]);
+    else if (fn === 'isStreaming')    result = _isStreaming();
+    else if (fn === 'getLastReply')   result = _getLastReply();
+    else if (fn === 'getReplyCount')  result = _getReplyCount();
+    else if (fn === 'isLastReplyDone') result = _isLastReplyDone();
     window.postMessage({ hpaSource: 'main', id, result, ok: true }, '*');
   } catch (e) {
     window.postMessage({ hpaSource: 'main', id, error: e.message, ok: false }, '*');
@@ -339,12 +340,37 @@ function _isStreaming() {
   if (document.querySelector('[data-testid="stop-button"]')) return true;
   if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
   if (document.querySelector('button[aria-label="Stop generating"]')) return true;
+  if (document.querySelector('button[aria-label*="Stop"]')) return true;
   if (document.querySelector('[class*="result-streaming"]')) return true;
+
+  // If ChatGPT has added action buttons to the last reply, generation is definitely done
+  if (_isLastReplyDone()) return false;
 
   // If the send button is present and enabled, ChatGPT is ready → not streaming
   if (_findSendButton()) return false;
 
   return false;
+}
+
+// Detect whether the last assistant reply has completed generation.
+// ChatGPT only adds action buttons (copy, thumbs up/down) AFTER streaming ends —
+// their presence is the most reliable "done" signal available.
+function _isLastReplyDone() {
+  try {
+    const els = document.querySelectorAll('[data-message-author-role="assistant"]');
+    if (!els.length) return false;
+    const last = els[els.length - 1];
+    return !!(
+      last.querySelector('button[data-testid="copy-turn-action-button"]') ||
+      last.querySelector('button[data-testid*="copy-turn"]') ||
+      last.querySelector('button[data-testid="thumbs-up-button"]') ||
+      last.querySelector('button[data-testid="thumbs-down-button"]') ||
+      last.querySelector('button[aria-label="Good response"]') ||
+      last.querySelector('button[aria-label="Bad response"]') ||
+      last.querySelector('button[aria-label="Copy"]') ||
+      last.querySelector('[data-testid="conversation-turn-action-bar"]')
+    );
+  } catch (_) { return false; }
 }
 
 // Returns the total number of assistant reply messages in the DOM.

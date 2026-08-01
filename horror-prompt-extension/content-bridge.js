@@ -201,28 +201,36 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   }
 
   // ── Phase 2: Wait for streaming to fully END
-  // Two independent signals — whichever fires first wins:
-  //   A) isStreaming() returns false (stop-button gone, send-button visible)
-  //   B) Content stability — reply text unchanged for 2.5 s (most reliable)
+  // Three independent signals — whichever fires first wins:
+  //   A) isStreaming() returns false (stop-button gone, action-buttons/send-button visible)
+  //   B) isLastReplyDone() — action buttons (copy/thumbs) appeared on the last reply
+  //   C) Content stability — reply text unchanged for 1.5 s
   let lastContent = null;
   let stableStart = null;
-  const STABLE_MS = 2500; // reply must be unchanged for this long → done
+  const STABLE_MS = 1500; // reply must be unchanged for this long → done
 
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
-    // Signal A: DOM-based streaming indicator
+    // Signal A: DOM-based streaming indicator (includes action-button check internally)
     const s = await callPage('isStreaming', [], 10000);
     if (s.ok === true && s.result === false) {
-      // Double-check after 800 ms to rule out brief UI flickers
-      await delay(800);
+      // Double-check after 500 ms to rule out brief UI flickers
+      await delay(500);
       const s2 = await callPage('isStreaming', [], 10000);
       if (s2.ok === true && s2.result === false) {
-        return; // Confirmed via stop-button/send-button detection
+        return; // Confirmed via stop-button/send-button/action-button detection
       }
     }
 
-    // Signal B: Content stability check
+    // Signal B: action buttons on last reply = generation definitely finished
+    const done = await callPage('isLastReplyDone', [], 10000);
+    if (done.ok && done.result === true) {
+      await delay(300); // tiny pause so content finishes rendering
+      return;
+    }
+
+    // Signal C: Content stability check (fallback when DOM signals are unreliable)
     const r = await callPage('getLastReply', [], 10000);
     if (r.ok && r.result) {
       const content = r.result;
