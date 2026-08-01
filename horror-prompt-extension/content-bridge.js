@@ -260,128 +260,103 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210, beforeCont
     await delay(3000);
   }
 
-  // ── Phase 2: Wait for streaming to fully END
-  // Two independent signals — whichever fires first wins:
-  //   A) isLastReplyDone() — action buttons (👍👎 copy) appeared on last reply.
-  //      PRIMARY signal. ChatGPT only renders these AFTER streaming is fully done.
-  //      Screenshot-verifiable. Immune to stop-button selector staleness — this is
-  //      the root cause of both known Phase 2 bugs:
-  //        • Signal A (old _isStreaming()==false) exited early → next scene sent while
-  //          still generating → voice button misclick (Problem 2).
-  //        • strict newContentSeen guard blocked by same selector staleness → loop
-  //          never exited even with complete output on screen (Problem 1).
-  //   B) Content stability — reply text unchanged for 1.5 s (fallback for edge cases
-  //      where action buttons render slowly or are not detected).
+  // ── Phase 2: Wait for streaming to fully END ─────────────────────────────
   //
-  // NOTE: _isStreaming() is intentionally NOT used as an exit signal in Phase 2.
-  // ChatGPT frequently changes stop-button testid/aria-label; when those selectors
-  // are stale, _isStreaming() returns false even while the model is still generating,
-  // which caused premature exits and the voice-button misclick.
+  // ── Why the old Signal A / B / C approach had bugs ────────────────────────
+  //
+  // Signal A (action buttons): Fired on the PREVIOUS scene's buttons when the
+  //   new reply DOM node hadn't rendered yet (virtualised 40+ turn conversations).
+  //   Also fired while streaming was still active if ChatGPT rendered buttons early.
+  //
+  // Signal B (content stability 1.5 s): Fired during a normal pause between
+  //   JSON tokens — generation hadn't ended, just briefly slowed down.
+  //
+  // Signal C (isStreaming double-false): Even with a reference counter, the
+  //   previous 2-check / 600 ms approach was fragile. The 3-check / 2 s approach
+  //   worked but added 4 s latency on every scene.
+  //
+  // ── New unified approach ──────────────────────────────────────────────────
+  //
+  // PRIMARY — streaming reference counter stable at 0:
+  //   _isStreaming() returns (__hpaStreamCount > 0).  When every backend-api
+  //   fetch (including concurrent metadata calls) has fully closed, the counter
+  //   reaches 0.  We require it to stay 0 for STREAM_STABLE_MS (1.5 s) to rule
+  //   out the brief inter-chunk gaps that can appear on slow connections.
+  //   Once the counter hits 0 and stays there, generation is definitively done —
+  //   no DOM selector needed, no action-button timing dependency.
+  //   Also resets whenever new content appears (content change means a stream
+  //   chunk arrived, so the counter must be > 0 — reset is just a safety net).
+  //
+  // FALLBACK — content unchanged for CONTENT_STABLE_MS (5 s):
+  //   Safety net for the rare case where [DONE] is never sent and the stream
+  //   closes without properly decrementing the counter.  5 s is long enough
+  //   to survive normal generation pauses without triggering prematurely.
+  //
+  // Both signals are gated behind newContentSeen (same logic as before) to
+  // prevent acting on a stale prior-scene reply.
 
-  // Capture the last reply content RIGHT NOW so Signal B's stability timer only
-  // starts once the reply has actually changed (prevents reading a stale prior scene).
   const initRes = await callPage('getLastReply', [], 10000);
   const initialContent = (initRes.ok && initRes.result) ? initRes.result : null;
 
-  let lastContent = null;
-  let stableStart = null;
-  // newContentSeen: true once the NEW scene's reply text is actually in the DOM.
-  //
-  // ── Root cause of two bugs this logic fixes ──────────────────────────────
-  //
-  // BUG A — "scene complete too early" (first scene in screenshot):
-  //   Phase 1 sees streaming start → newReplyAppeared=true → old code set
-  //   newContentSeen=true immediately. But in virtualised 40+ turn convos the
-  //   new reply DOM node hasn't rendered yet; last DOM element is still the
-  //   PREVIOUS scene's reply with its action buttons already visible.
-  //   Signal A fires on those old buttons → loop exits → extension marks done
-  //   while ChatGPT is still generating.
-  //
-  // BUG B — "waiting forever" (second scene in screenshot):
-  //   ChatGPT responded so fast that generate was complete before Phase 1 even
-  //   ran. Phase 1 saw streaming=false, count didn't increase (virtualised) →
-  //   newReplyAppeared=false → old code set newContentSeen=false. In Phase 2
-  //   initialContent = the already-complete new reply; it never changes →
-  //   newContentSeen never becomes true → loop runs until 210s timeout.
-  //
-  // ── Fix: compare against beforeContent ───────────────────────────────────
-  //   beforeContent = last reply text captured BEFORE typeAndSend was called.
-  //   initialContent = last reply text captured at Phase 2 start (may be same
-  //   as beforeContent if virtualised, or already the new reply if fast network).
-  //
-  //   newContentSeen = true  iff  initialContent already differs from beforeContent
-  //   → the new reply rendered before Phase 2 started (fast generation). ✓
-  //   newContentSeen = false iff  initialContent === beforeContent
-  //   → DOM still shows the old reply; wait for content to change. ✓
-  //
-  //   This handles both bugs:
-  //   • BUG A: initialContent===beforeContent (old reply) → newContentSeen=false
-  //     → Signals A/C blocked until content actually changes. ✓
-  //   • BUG B: initialContent!==beforeContent (new reply already done)
-  //     → newContentSeen=true immediately → Signal A fires on correct reply. ✓
-  //
-  // Edge cases:
-  //   • beforeContent===null (very first reply ever): any non-null initialContent
-  //     counts as new. ✓
-  //   • initialContent===null: DOM has no reply yet; wait as before. ✓
+  // newContentSeen: the last DOM reply is already the NEW scene's reply.
+  // True when initialContent already differs from beforeContent (fast network /
+  // generation complete before Phase 2 started).  False when DOM still shows the
+  // old reply — wait for content to change before trusting any exit signal.
   let newContentSeen = initialContent !== null &&
                        (beforeContent === null || initialContent !== beforeContent);
-  const STABLE_MS = 1500; // content must be unchanged for this long → done
+
+  let lastContent = null;       // last observed reply text (for content-change detection)
+  let stableStart  = null;      // when lastContent last changed (for 5 s fallback)
+  let streamZeroSince = null;   // when __hpaStreamCount first reached 0 (for primary signal)
+
+  const STREAM_STABLE_MS  = 1500;  // counter must stay 0 for this long → done
+  const CONTENT_STABLE_MS = 5000;  // content-unchanged fallback threshold
 
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
-    // ── Signal A (PRIMARY): action buttons appeared on the last reply ─────────
-    // Only checked once newContentSeen is true (new reply text has appeared).
-    if (newContentSeen) {
-      const done = await callPage('isLastReplyDone', [], 10000);
-      if (done.ok && done.result === true) {
-        // Brief confirmation pause to rule out transient button flicker
-        await delay(300);
-        const done2 = await callPage('isLastReplyDone', [], 10000);
-        if (done2.ok && done2.result === true) {
-          return; // Action buttons confirmed — reply fully generated ✓
-        }
-      }
-    }
-
-    // ── Signal C (SECONDARY): fetch interceptor confirms no active streams ──────
-    // _isStreaming() now uses a reference counter (__hpaStreamCount) so a short
-    // concurrent API call no longer causes a false zero while generation runs.
-    // Requires THREE consecutive false readings 2 s apart (total ~4 s stable)
-    // to guard against any remaining edge-case transients.
-    // Only active once newContentSeen is true.
-    if (newContentSeen) {
-      const s1 = await callPage('isStreaming', [], 8000);
-      if (s1.ok && s1.result === false) {
-        await delay(2000);
-        const s2 = await callPage('isStreaming', [], 8000);
-        if (s2.ok && s2.result === false) {
-          await delay(2000);
-          const s3 = await callPage('isStreaming', [], 8000);
-          if (s3.ok && s3.result === false) {
-            return; // Stream count zero for ~4 s → generation complete ✓
-          }
-        }
-      }
-    }
-
-    // ── Signal B (FALLBACK): content stability check ──────────────────────────
+    // ── Update newContentSeen and content-stability tracker ────────────────
     const r = await callPage('getLastReply', [], 10000);
     if (r.ok && r.result) {
       const content = r.result;
 
+      // Flip newContentSeen the moment DOM content differs from initial snapshot.
       if (!newContentSeen && content !== initialContent) {
         newContentSeen = true;
       }
 
       if (newContentSeen) {
         if (content !== lastContent) {
-          lastContent = content;
-          stableStart = Date.now();
-        } else if (stableStart !== null && Date.now() - stableStart >= STABLE_MS) {
-          return; // Content stable for STABLE_MS → streaming done ✓
+          lastContent     = content;
+          stableStart     = Date.now();
+          streamZeroSince = null; // new content arrived → a stream chunk just came in →
+                                  // reset the stream-zero timer (counter must be > 0 right now)
         }
+      }
+    }
+
+    if (newContentSeen) {
+      // ── PRIMARY: streaming reference counter held at 0 ───────────────────
+      const streamRes = await callPage('isStreaming', [], 8000);
+      if (streamRes.ok) {
+        if (streamRes.result === false) {
+          // Counter is 0 — no active streams right now.
+          if (streamZeroSince === null) streamZeroSince = Date.now();
+          if (Date.now() - streamZeroSince >= STREAM_STABLE_MS) {
+            return; // Counter at 0 for STREAM_STABLE_MS → generation complete ✓
+          }
+        } else {
+          // Stream still active — reset the zero-stability timer.
+          streamZeroSince = null;
+        }
+      }
+
+      // ── FALLBACK: content unchanged for CONTENT_STABLE_MS ────────────────
+      // Only fires when the primary signal hasn't fired (e.g. [DONE] was never
+      // sent and the counter is stuck > 0).  5 s ensures this doesn't trigger
+      // during normal mid-generation pauses.
+      if (stableStart !== null && Date.now() - stableStart >= CONTENT_STABLE_MS) {
+        return; // Content stable for 5 s → assume generation complete ✓
       }
     }
 
