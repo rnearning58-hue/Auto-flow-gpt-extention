@@ -201,10 +201,13 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   }
 
   // ── Phase 2: Wait for streaming to fully END
-  // Three independent signals — whichever fires first wins:
-  //   A) isStreaming() returns false (stop-button gone, action-buttons/send-button visible)
-  //   B) isLastReplyDone() — action buttons (copy/thumbs) appeared on the last reply
-  //   C) Content stability — reply text unchanged for 1.5 s
+  // Two independent signals — whichever fires first wins:
+  //   A) isStreaming() returns false (stop-button gone, send-button visible)
+  //   B) Content stability — reply text unchanged for 1.5 s
+  //
+  // NOTE: action-button detection (isLastReplyDone) was removed — ChatGPT shows
+  // action buttons on previously-completed messages, and they can appear on the
+  // currently-streaming message's DOM node, causing false "done" readings.
   let lastContent = null;
   let stableStart = null;
   const STABLE_MS = 1500; // reply must be unchanged for this long → done
@@ -212,25 +215,20 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
-    // Signal A: DOM-based streaming indicator (includes action-button check internally)
+    // Signal A: DOM-based streaming indicator (stop-button / send-button)
     const s = await callPage('isStreaming', [], 10000);
     if (s.ok === true && s.result === false) {
       // Double-check after 500 ms to rule out brief UI flickers
       await delay(500);
       const s2 = await callPage('isStreaming', [], 10000);
       if (s2.ok === true && s2.result === false) {
-        return; // Confirmed via stop-button/send-button/action-button detection
+        return; // Confirmed: stop-button gone, send-button visible
       }
     }
 
-    // Signal B: action buttons on last reply = generation definitely finished
-    const done = await callPage('isLastReplyDone', [], 10000);
-    if (done.ok && done.result === true) {
-      await delay(300); // tiny pause so content finishes rendering
-      return;
-    }
-
-    // Signal C: Content stability check (fallback when DOM signals are unreliable)
+    // Signal B: Content stability check (fallback when DOM signals are unreliable)
+    // _getLastReply() targets only the prose/text container, not action-bar buttons,
+    // so this timer resets only while actual text is still being generated.
     const r = await callPage('getLastReply', [], 10000);
     if (r.ok && r.result) {
       const content = r.result;

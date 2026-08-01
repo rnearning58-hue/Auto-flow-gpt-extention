@@ -335,16 +335,14 @@ function _sendPageStatus(status, extra = {}) {
 }
 
 function _isStreaming() {
-  // Specific stop-button selectors used by ChatGPT during active generation
+  // Specific stop-button selectors used by ChatGPT during active generation.
+  // NOTE: do NOT use broad selectors like aria-label*="Stop" — they match the
+  // voice-input stop button and cause false "still streaming" results.
   if (document.querySelector('button[data-testid="stop-button"]')) return true;
   if (document.querySelector('[data-testid="stop-button"]')) return true;
   if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
   if (document.querySelector('button[aria-label="Stop generating"]')) return true;
-  if (document.querySelector('button[aria-label*="Stop"]')) return true;
   if (document.querySelector('[class*="result-streaming"]')) return true;
-
-  // If ChatGPT has added action buttons to the last reply, generation is definitely done
-  if (_isLastReplyDone()) return false;
 
   // If the send button is present and enabled, ChatGPT is ready → not streaming
   if (_findSendButton()) return false;
@@ -383,11 +381,28 @@ function _getLastReply() {
   const els = document.querySelectorAll('[data-message-author-role="assistant"]');
   if (!els.length) return null;
   const last = els[els.length - 1];
+
+  // Try dedicated prose/content selectors first — these contain ONLY the generated
+  // text and don't include action-bar button labels (Copy, Good response, etc.).
+  // Action-bar text in innerText would reset the stability timer every time ChatGPT
+  // adds/updates buttons after generation, causing false "still changing" readings.
   const prose =
     last.querySelector('[class*="prose"]') ||
     last.querySelector('[class*="markdown"]') ||
-    last.querySelector('.markdown');
-  return ((prose || last).innerText || '').trim() || null;
+    last.querySelector('.markdown') ||
+    last.querySelector('[data-message-content]') ||
+    last.querySelector('[class*="whitespace-pre-wrap"]');
+  if (prose) return (prose.innerText || '').trim() || null;
+
+  // Fallback: walk direct children and return the first one with substantial text.
+  // Content is always the first major child; the action bar (buttons) comes last.
+  const children = Array.from(last.children);
+  for (const child of children) {
+    const text = (child.innerText || '').trim();
+    if (text.length > 20) return text;
+  }
+
+  return (last.innerText || '').trim() || null;
 }
 
 // Simulate a keyboard Enter press to trigger ChatGPT's send action.
