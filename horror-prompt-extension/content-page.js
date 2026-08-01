@@ -79,6 +79,20 @@ window.addEventListener('message', async (event) => {
 });
 
 async function _typeAndSend(text) {
+  // ── Guard: wait until ChatGPT finishes any ongoing generation ─────────────
+  // If called while ChatGPT is still streaming (previous scene still generating),
+  // pasting and pressing Enter either fails silently or ends up clicking the
+  // voice button after 30 s of retries.
+  // _isStreaming() uses the fetch interceptor as primary signal — reliable,
+  // selector-independent, immune to ChatGPT UI changes.
+  // Max wait: 5 minutes (covers very long scene outputs).
+  {
+    const streamGuardDeadline = Date.now() + 300000;
+    while (_isStreaming() && Date.now() < streamGuardDeadline) {
+      await _delay(500);
+    }
+  }
+
   const el = await _findInput(15000);
   if (!el) throw new Error('ChatGPT input box পাওয়া যায়নি');
 
@@ -87,11 +101,9 @@ async function _typeAndSend(text) {
   // countBefore: used to detect when a new assistant node appears in the DOM.
   //   Reliable when DOM virtualisation is not in effect.
   //
-  // wasStreamingOnEntry: true if ChatGPT was still generating the PREVIOUS scene's
-  //   reply when typeAndSend was called (network delay / late output).
-  //   Used to scope the count-rise fallback: if streaming was already active, a count
-  //   increase might belong to that delayed prior reply, not our new message.
-  //   In that case we only trust _composerCleared() as the acceptance signal.
+  // wasStreamingOnEntry: always false now (guard above ensures ChatGPT is idle),
+  //   but kept for safety — counts the extremely unlikely case where a new stream
+  //   started between the guard exit and this line.
   const countBefore = _getReplyCount();
   const wasStreamingOnEntry = _isStreaming();
 
