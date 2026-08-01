@@ -5,6 +5,63 @@
 if (!window.__hpaPageLoaded) {
 window.__hpaPageLoaded = true;
 
+// ── Fetch interceptor: network-level stream detection ─────────────────────
+// Patches window.fetch to watch ChatGPT's SSE stream directly.
+// When the stream begins  → __hpaIsStreaming = true
+// When [DONE] is received → __hpaIsStreaming = false
+// This is far more reliable than DOM polling: it is immune to selector
+// changes, virtualisation, and action-button render timing.
+(function _initStreamInterceptor() {
+  if (window.__hpaStreamInterceptorActive) return;
+  window.__hpaStreamInterceptorActive = true;
+  window.__hpaIsStreaming = false;
+
+  const origFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const url = typeof args[0] === 'string'
+      ? args[0]
+      : (args[0]?.url ?? '');
+
+    const response = await origFetch.apply(this, args);
+
+    // Only intercept ChatGPT's conversation / backend API endpoints
+    const isConvoCall =
+      url.includes('/conversation') ||
+      url.includes('backend-api')   ||
+      url.includes('backend-anon');
+
+    if (isConvoCall && response.body) {
+      window.__hpaIsStreaming = true;
+
+      let clone;
+      try { clone = response.clone(); }
+      catch (_) { window.__hpaIsStreaming = false; return response; }
+
+      // Drain the cloned stream asynchronously — original body is untouched
+      (async () => {
+        try {
+          const reader  = clone.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) { window.__hpaIsStreaming = false; return; }
+            const chunk = decoder.decode(value, { stream: true });
+            // SSE end-of-stream marker sent by all ChatGPT model variants
+            if (chunk.includes('data: [DONE]')) {
+              window.__hpaIsStreaming = false;
+              return;
+            }
+          }
+        } catch (_) {
+          window.__hpaIsStreaming = false;
+        }
+      })();
+    }
+
+    return response;
+  };
+})();
+
 window.addEventListener('message', async (event) => {
   if (!event.data || event.data.hpaSource !== 'isolated') return;
   const { id, fn, args } = event.data;
@@ -411,46 +468,40 @@ function _findComposerStateButton() {
 }
 
 function _isStreaming() {
-  // ── Strategy 1: known data-testid / aria-label selectors (fast path) ──
+  // ── Strategy 0: fetch interceptor (PRIMARY — network-level, selector-immune) ──
+  // __hpaIsStreaming is set true when ChatGPT's SSE stream begins and false the
+  // moment the stream sends data: [DONE] or the reader reports done.
+  // This signal is completely independent of DOM structure and CSS class names.
+  if (window.__hpaStreamInterceptorActive) {
+    return window.__hpaIsStreaming === true;
+  }
+
+  // ── Strategy 1: known data-testid / aria-label selectors (fallback) ──
   if (document.querySelector('button[data-testid="stop-button"]')) return true;
   if (document.querySelector('[data-testid="stop-button"]'))        return true;
   if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
   if (document.querySelector('button[aria-label="Stop generating"]')) return true;
 
-  // ── Strategy 2: composer state button visual inspection ──
-  // Three button states, two reliable visual signals:
-  //
-  //   State          | Background  | SVG rects
-  //   ───────────────|─────────────|──────────
-  //   Idle/sound-wave| DARK circle | 4+ rects (the vertical bars)
-  //   Stop (square)  | LIGHT circle| 1 rect   (the filled square)
-  //   Send (arrow)   | LIGHT circle| 0 rects  (path-based arrow)
-  //
-  // Signal A — background brightness: dark → idle → not streaming (most reliable)
-  // Signal B — SVG <rect> count: 1 → stop → streaming; 0 → send → not streaming
-  //            (>1 should already be caught by Signal A's darkness check)
+  // ── Strategy 2: composer state button visual inspection (fallback) ──
+  //   Idle/sound-wave → DARK background → not streaming
+  //   Stop (square)   → LIGHT background + 1 SVG rect → streaming
+  //   Send (arrow)    → LIGHT background + 0 SVG rects → not streaming
   const stateBtn = _findComposerStateButton();
   if (stateBtn) {
-    // Signal A: background colour
     try {
       const bg   = window.getComputedStyle(stateBtn).backgroundColor;
       const vals = bg.match(/[\d.]+/g);
       if (vals && vals.length >= 3) {
         const brightness = (parseInt(vals[0]) + parseInt(vals[1]) + parseInt(vals[2])) / 3;
-        if (brightness < 100) return false; // dark circle → idle/sound-wave → not streaming
-        // brightness ≥ 100 → white circle → stop or send (need Signal B to distinguish)
+        if (brightness < 100) return false; // dark → idle/sound-wave
       }
     } catch (_) {}
-
-    // Signal B: SVG <rect> count
     const rectCount = stateBtn.querySelectorAll('svg rect').length;
-    if (rectCount === 1) return true;   // single filled square → stop button → streaming
-    if (rectCount === 0) return false;  // no rect (arrow path) → send button → not streaming
-    // rectCount > 1 → sound-wave bars (should have been caught by Signal A) → not streaming
+    if (rectCount === 1) return true;
     return false;
   }
 
-  // ── Strategy 3: known idle / done signals (fallback) ──
+  // ── Strategy 3: known idle signals (last resort) ──
   if (document.querySelector('button[data-testid="composer-speech-button"]')) return false;
   if (document.querySelector('button[data-testid="voice-mode-button"]'))      return false;
   if (document.querySelector('button[data-testid="voice-mode-toggle"]'))      return false;
