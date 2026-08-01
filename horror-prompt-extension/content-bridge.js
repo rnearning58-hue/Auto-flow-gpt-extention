@@ -217,53 +217,72 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   // ── Phase 2: Wait for streaming to fully END
   // Two independent signals — whichever fires first wins:
   //   A) isStreaming() returns false (stop-button gone, voice/send-button visible)
-  //   B) Content stability — reply text unchanged for 1.5 s
+  //   B) Content stability — NEW reply text unchanged for 1.5 s
   //
-  // Safety net: if BOTH signals fail for 25 s and we have received content,
-  // proceed anyway rather than blocking the queue for up to 210 s.
+  // KEY INVARIANT: Signal B only starts counting once content has CHANGED from
+  // what was present at Phase 2 start. This prevents the bug where a slow/delayed
+  // network causes Phase 1 to fall through, Phase 2 reads the PREVIOUS scene's
+  // stable output, and exits prematurely — skipping the scene entirely.
+
+  // Capture whatever is in the last reply RIGHT NOW (before the new reply arrives).
+  // Signal B stability timer will not start until content diverges from this value.
+  const initRes = await callPage('getLastReply', [], 10000);
+  const initialContent = (initRes.ok && initRes.result) ? initRes.result : null;
+
   let lastContent = null;
   let stableStart = null;
-  const STABLE_MS = 1500; // reply must be unchanged for this long → done
+  let newContentSeen = false; // true once content has changed from initialContent
+  const STABLE_MS = 1500;     // content must be unchanged for this long → done
   const phase2Start = Date.now();
-  const PHASE2_SAFETY_MS = 25000; // hard cap — don't wait more than 25 s
+  const PHASE2_SAFETY_MS = 30000; // safety cap — only fires if new content was seen
 
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
     // Signal A: DOM-based streaming indicator (stop-button / voice-button / send-button)
+    // Only trust "not streaming" if new content has appeared — guards against the case
+    // where ChatGPT hasn't started generating yet (no stop-button = "not streaming"
+    // before the response begins, which would be a false positive).
     const s = await callPage('isStreaming', [], 10000);
-    if (s.ok === true && s.result === false) {
+    if (s.ok === true && s.result === false && newContentSeen) {
       // Brief pause to rule out transient UI state between stop→voice button swap
       await delay(300);
       const s2 = await callPage('isStreaming', [], 10000);
       if (s2.ok === true && s2.result === false) {
-        return; // Confirmed: stop-button gone, ChatGPT idle
+        return; // Confirmed: new reply fully received, ChatGPT now idle
       }
     }
 
-    // Signal B: Content stability check (fallback when DOM signals are unreliable)
-    // _getLastReply() targets only the prose/text container, not action-bar buttons,
-    // so this timer resets only while actual text is still being generated.
+    // Signal B: Content stability check
     const r = await callPage('getLastReply', [], 10000);
     if (r.ok && r.result) {
       const content = r.result;
-      if (content !== lastContent) {
-        lastContent = content;
-        stableStart = Date.now();
-      } else if (stableStart !== null && Date.now() - stableStart >= STABLE_MS) {
-        return; // Content stable for STABLE_MS — done
+
+      // Detect when NEW content first appears (different from what was there before send)
+      if (!newContentSeen && content !== initialContent) {
+        newContentSeen = true;
+      }
+
+      // Only run the stability timer after new content has arrived
+      if (newContentSeen) {
+        if (content !== lastContent) {
+          lastContent = content;
+          stableStart = Date.now();
+        } else if (stableStart !== null && Date.now() - stableStart >= STABLE_MS) {
+          return; // New content stable for STABLE_MS — streaming done
+        }
       }
     }
 
-    // Safety net: if both signals kept failing but we do have content,
-    // don't block forever — proceed after PHASE2_SAFETY_MS.
-    if (lastContent && Date.now() - phase2Start > PHASE2_SAFETY_MS) {
+    // Safety net: only applies once new content has been seen.
+    // If network is slow and no new content yet, keep waiting (don't skip the scene).
+    if (newContentSeen && Date.now() - phase2Start > PHASE2_SAFETY_MS) {
       return;
     }
 
     await delay(400);
   }
-  // Global timeout reached — move on with whatever output arrived
+  // Global timeout reached (210 s) — move on with whatever output arrived
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────
