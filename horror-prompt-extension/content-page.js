@@ -25,6 +25,19 @@ async function _typeAndSend(text) {
   const el = await _findInput(15000);
   if (!el) throw new Error('ChatGPT input box পাওয়া যায়নি');
 
+  // Capture baseline state BEFORE we do anything.
+  //
+  // countBefore: used to detect when a new assistant node appears in the DOM.
+  //   Reliable when DOM virtualisation is not in effect.
+  //
+  // wasStreamingOnEntry: true if ChatGPT was still generating the PREVIOUS scene's
+  //   reply when typeAndSend was called (network delay / late output).
+  //   Used to scope the count-rise fallback: if streaming was already active, a count
+  //   increase might belong to that delayed prior reply, not our new message.
+  //   In that case we only trust _composerCleared() as the acceptance signal.
+  const countBefore = _getReplyCount();
+  const wasStreamingOnEntry = _isStreaming();
+
   el.focus();
   await _delay(300);
 
@@ -87,7 +100,19 @@ async function _typeAndSend(text) {
         const btn = _findSendButton();
         if (btn) {
           btn.click();
-          return true;
+          await _delay(600);
+          // Acceptance check: did ChatGPT receive our message?
+          // Signal 1 — Composer cleared (PRIMARY, always checked):
+          //   When ChatGPT accepts a message it immediately empties the input box.
+          //   Reliable even in virtualised 40+ turn conversations; does NOT fire on a
+          //   pre-existing streaming state from the previous scene.
+          // Signal 2 — Reply count increased (SECONDARY, scoped):
+          //   Only used when ChatGPT was NOT already streaming when typeAndSend was called.
+          //   If streaming was already active on entry, a count rise could belong to the
+          //   delayed prior reply (not ours), so we skip it and rely solely on Signal 1.
+          if (_composerCleared(el) || (!wasStreamingOnEntry && _getReplyCount() > countBefore)) return true;
+          // Neither signal fired: wrong button may have been clicked (e.g. voice icon) or
+          // ChatGPT isn't ready. Fall through to Enter attempt.
         }
 
         // Attempt 2: simulate Enter key press (keydown + keypress + keyup)
@@ -95,8 +120,10 @@ async function _typeAndSend(text) {
         _pressEnter(el);
         await _delay(700);
 
-        // If ChatGPT started streaming, the Enter key worked — return success
-        if (_isStreaming()) return true;
+        // Same dual-signal check after Enter (same scoping rationale as above):
+        //   • Composer cleared → always sufficient regardless of streaming state.
+        //   • Count increased → only when streaming was idle on typeAndSend entry.
+        if (_composerCleared(el) || (!wasStreamingOnEntry && _getReplyCount() > countBefore)) return true;
 
         await _delay(300);
       }
@@ -255,6 +282,18 @@ function _findSendButton() {
                 'stop', 'search', 'browse', 'photo', 'image', 'upload', 'tool',
                 'speech', 'record', 'audio', 'dictate'];
 
+  // Explicit voice/speech button selectors — excluded regardless of aria-label or
+  // data-testid values (guards against buttons with empty/missing attributes that
+  // would otherwise slip past the keyword filter above and receive a stray click).
+  const VOICE_SELECTORS =
+    '[data-testid="composer-speech-button"],' +
+    '[data-testid="voice-mode-button"],' +
+    '[data-testid="voice-mode-toggle"],' +
+    '[aria-label*="voice" i],' +
+    '[aria-label*="microphone" i],' +
+    '[aria-label*="dictate" i],' +
+    '[aria-label*="speech" i]';
+
   // Walk up at most 8 levels from the input, find the first ancestor that contains
   // exactly the send button (after filtering out known non-send buttons).
   let container = input.parentElement;
@@ -263,6 +302,9 @@ function _findSendButton() {
     const candidates = buttons.filter(btn => {
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
       if (!btn.querySelector('svg')) return false;
+      // Explicit voice button guard — checked before keyword filter so buttons with
+      // empty aria-label/data-testid are still correctly excluded.
+      try { if (btn.matches(VOICE_SELECTORS)) return false; } catch (_) {}
       const label = (btn.getAttribute('aria-label') || '').toLowerCase();
       const testid = (btn.getAttribute('data-testid') || '').toLowerCase();
       return !skip.some(w => label.includes(w) || testid.includes(w));
@@ -419,6 +461,25 @@ function _getLastReply() {
   }
 
   return (last.innerText || '').trim() || null;
+}
+
+// Returns true when the composer input box has been cleared by ChatGPT after accepting
+// a message. This is the most reliable acceptance signal in virtualized long conversations
+// (where _getReplyCount() may stay stale) and is immune to pre-existing streaming state
+// (the previous scene's stop-button cannot cause a false positive here).
+// Re-queries the DOM rather than trusting the passed-in reference, which may be stale.
+function _composerCleared(hint) {
+  try {
+    const el =
+      document.querySelector('#prompt-textarea') ||
+      document.querySelector('div[contenteditable="true"][id*="prompt"]') ||
+      document.querySelector('div[contenteditable="true"].ProseMirror') ||
+      hint;
+    if (!el) return false;
+    return (el.innerText || el.textContent || '').trim().length === 0;
+  } catch (_) {
+    return false;
+  }
 }
 
 // Simulate a keyboard Enter press to trigger ChatGPT's send action.

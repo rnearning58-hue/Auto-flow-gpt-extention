@@ -179,30 +179,60 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
   const totalDeadline = Date.now() + timeoutSec * 1000;
 
   // ── Phase 1: Wait for a NEW reply message to appear in the DOM (up to 30s)
-  // Detection method: reply count increases OR streaming starts (stop-button appears).
+  // Detection method: reply count increases OR streaming STARTS (transitions to true).
   // NOTE: In long conversations (40+ messages) ChatGPT virtualizes old DOM nodes, so
   // the reply count may NOT increase even when a new reply appears. We fall through to
   // Phase 2 in that case rather than returning early — Phase 2's content-stability
   // check will still fire correctly once the new reply's text stabilises.
+
+  // ── Streaming transition tracker ──────────────────────────────────────────
+  // We detect a NEW reply via two independent signals:
+  //   1. Reply count increases (direct, but fails in virtualised 40+ turn convos)
+  //   2. Streaming state transitions to true (stop-button appears)
+  //
+  // Signal 2 needs careful qualification:
+  //   • If streaming was IDLE at Phase 1 start: any transition to true = new reply. ✓
+  //   • If streaming was ALREADY ACTIVE (previous scene still generating):
+  //     a simple "is streaming = true" would fire immediately and be wrong.
+  //     We must observe the full sequence  true → false → true:
+  //       - true  (old stream running)
+  //       - false (old stream ended)
+  //       - true  (new scene started streaming)  ← this final true = new reply ✓
+  //
+  // The tracker below handles both cases with a single unified state machine.
+  const prePhase1StreamRes = await callPage('isStreaming', [], 8000);
+  let trackedStreaming = prePhase1StreamRes.ok && prePhase1StreamRes.result === true;
+  // If we start NOT streaming: the very first true transition is the new reply.
+  // If we start streaming: we need to see it go false first, then true again.
+  let sawStreamingFalse = !trackedStreaming; // already false-phase satisfied if idle
+
   const newReplyDeadline = Date.now() + 30000;
   let newReplyAppeared = false;
 
   while (Date.now() < newReplyDeadline) {
     if (stopRequested) return;
 
-    // Primary: count increased → new reply in DOM
+    // Primary: count increased → new reply in DOM (fastest path when not virtualised)
     const countRes = await callPage('getReplyCount', [], 8000);
     if (countRes.ok && countRes.result != null && countRes.result > beforeCount) {
       newReplyAppeared = true;
       break;
     }
 
-    // Secondary: stop-button appeared → ChatGPT started streaming (count may be stale)
+    // Secondary: streaming state transition — only accept a new-streaming event
+    // after we've already seen streaming go false (old scene ended).
     const streamRes = await callPage('isStreaming', [], 8000);
-    if (streamRes.ok && streamRes.result === true) {
+    const currentStreaming = streamRes.ok && streamRes.result === true;
+
+    if (!currentStreaming) {
+      // Old (or any prior) stream has ended — we're now in the "false" phase.
+      sawStreamingFalse = true;
+    } else if (currentStreaming && sawStreamingFalse) {
+      // Streaming is true AND we previously saw it go false → this is the new reply.
       newReplyAppeared = true;
       break;
     }
+    trackedStreaming = currentStreaming;
 
     await delay(350);
   }
@@ -231,10 +261,18 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 
   let lastContent = null;
   let stableStart = null;
-  let newContentSeen = false; // true once content has changed from initialContent
+  let newContentSeen = false; // true once content has changed AND a new reply confirmed
   const STABLE_MS = 1500;     // content must be unchanged for this long → done
   const phase2Start = Date.now();
   const PHASE2_SAFETY_MS = 30000; // safety cap — only fires if new content was seen
+
+  // Cache the reply count at Phase 2 start so we can verify new replies in the loop
+  // without an extra RPC on every iteration.
+  let cachedCountAfterSend = -1;
+  {
+    const cr = await callPage('getReplyCount', [], 8000);
+    if (cr.ok && cr.result != null) cachedCountAfterSend = cr.result;
+  }
 
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
@@ -258,9 +296,29 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
     if (r.ok && r.result) {
       const content = r.result;
 
-      // Detect when NEW content first appears (different from what was there before send)
+      // Detect when NEW content first appears (different from what was there before send).
+      //
+      // Extra guard against network-delay race condition:
+      // If the previous scene's reply was still streaming when typeAndSend returned,
+      // the previous reply's content will change here — but that should NOT be treated
+      // as the new scene's reply arriving.  We only accept a content change as "new"
+      // when we can confirm a genuinely NEW reply appeared (reply count increased),
+      // OR when Phase 1 already confirmed a new reply via the streaming indicator.
+      // In long conversations where ChatGPT virtualises old DOM nodes (count may not
+      // increase), we fall back to trusting Phase 1's newReplyAppeared flag.
       if (!newContentSeen && content !== initialContent) {
-        newContentSeen = true;
+        // Check if reply count increased since before we sent this scene.
+        // Re-read the count here (not cached from Phase 1) for freshness.
+        const verifyRes = await callPage('getReplyCount', [], 8000);
+        const verifyCount = (verifyRes.ok && verifyRes.result != null) ? verifyRes.result : -1;
+        const countRose = beforeCount >= 0 && verifyCount > beforeCount;
+
+        if (newReplyAppeared || countRose) {
+          // Confirmed: this content change belongs to the new reply, not the old one.
+          newContentSeen = true;
+          if (verifyCount > cachedCountAfterSend) cachedCountAfterSend = verifyCount;
+        }
+        // If neither signal fired yet: keep waiting — don't flip newContentSeen.
       }
 
       // Only run the stability timer after new content has arrived
