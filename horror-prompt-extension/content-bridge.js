@@ -345,20 +345,23 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210, beforeCont
       }
     }
 
-    // ── Signal C (SECONDARY): composer state button shows idle / done ─────────
-    // Uses the new SVG-based _isStreaming() which detects the stop button by its
-    // <rect> element rather than data-testid/aria-label (selector-independent).
-    // Sound-wave button (🔵) visible = idle = generation complete.
-    // Requires two consecutive false readings 600 ms apart to guard against the
-    // brief visual transition between stop → send → idle states.
-    // Only active once newContentSeen is true so we never exit on a stale prior state.
+    // ── Signal C (SECONDARY): fetch interceptor confirms no active streams ──────
+    // _isStreaming() now uses a reference counter (__hpaStreamCount) so a short
+    // concurrent API call no longer causes a false zero while generation runs.
+    // Requires THREE consecutive false readings 2 s apart (total ~4 s stable)
+    // to guard against any remaining edge-case transients.
+    // Only active once newContentSeen is true.
     if (newContentSeen) {
       const s1 = await callPage('isStreaming', [], 8000);
       if (s1.ok && s1.result === false) {
-        await delay(600);
+        await delay(2000);
         const s2 = await callPage('isStreaming', [], 8000);
         if (s2.ok && s2.result === false) {
-          return; // Idle/sound-wave button confirmed twice → generation complete ✓
+          await delay(2000);
+          const s3 = await callPage('isStreaming', [], 8000);
+          if (s3.ok && s3.result === false) {
+            return; // Stream count zero for ~4 s → generation complete ✓
+          }
         }
       }
     }

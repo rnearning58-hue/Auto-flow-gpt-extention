@@ -7,14 +7,19 @@ window.__hpaPageLoaded = true;
 
 // ── Fetch interceptor: network-level stream detection ─────────────────────
 // Patches window.fetch to watch ChatGPT's SSE stream directly.
-// When the stream begins  → __hpaIsStreaming = true
-// When [DONE] is received → __hpaIsStreaming = false
-// This is far more reliable than DOM polling: it is immune to selector
-// changes, virtualisation, and action-button render timing.
+// Uses a REFERENCE COUNTER (__hpaStreamCount) instead of a boolean so that
+// multiple concurrent backend-api calls (e.g. the main SSE stream + a short
+// metadata fetch) don't corrupt the streaming state:
+//   • Each intercepted call increments the counter on start.
+//   • Decrements ONLY when its own reader/[DONE] confirms that call ended.
+//   • _isStreaming() returns true as long as count > 0.
+// Without this, a short parallel fetch ending early would set the flag to
+// false while the real generation stream was still running, causing Phase 2
+// Signal C to fire and mark the scene complete prematurely.
 (function _initStreamInterceptor() {
   if (window.__hpaStreamInterceptorActive) return;
   window.__hpaStreamInterceptorActive = true;
-  window.__hpaIsStreaming = false;
+  window.__hpaStreamCount = 0; // reference count — >0 means at least one stream active
 
   const origFetch = window.fetch;
   window.fetch = async function (...args) {
@@ -31,11 +36,14 @@ window.__hpaPageLoaded = true;
       url.includes('backend-anon');
 
     if (isConvoCall && response.body) {
-      window.__hpaIsStreaming = true;
+      window.__hpaStreamCount++;          // ← increment: this fetch is now active
 
       let clone;
       try { clone = response.clone(); }
-      catch (_) { window.__hpaIsStreaming = false; return response; }
+      catch (_) {
+        window.__hpaStreamCount = Math.max(0, window.__hpaStreamCount - 1);
+        return response;
+      }
 
       // Drain the cloned stream asynchronously — original body is untouched
       (async () => {
@@ -44,16 +52,19 @@ window.__hpaPageLoaded = true;
           const decoder = new TextDecoder();
           while (true) {
             const { done, value } = await reader.read();
-            if (done) { window.__hpaIsStreaming = false; return; }
+            if (done) {
+              window.__hpaStreamCount = Math.max(0, window.__hpaStreamCount - 1);
+              return;
+            }
             const chunk = decoder.decode(value, { stream: true });
             // SSE end-of-stream marker sent by all ChatGPT model variants
             if (chunk.includes('data: [DONE]')) {
-              window.__hpaIsStreaming = false;
+              window.__hpaStreamCount = Math.max(0, window.__hpaStreamCount - 1);
               return;
             }
           }
         } catch (_) {
-          window.__hpaIsStreaming = false;
+          window.__hpaStreamCount = Math.max(0, window.__hpaStreamCount - 1);
         }
       })();
     }
@@ -481,11 +492,12 @@ function _findComposerStateButton() {
 
 function _isStreaming() {
   // ── Strategy 0: fetch interceptor (PRIMARY — network-level, selector-immune) ──
-  // __hpaIsStreaming is set true when ChatGPT's SSE stream begins and false the
-  // moment the stream sends data: [DONE] or the reader reports done.
-  // This signal is completely independent of DOM structure and CSS class names.
+  // __hpaStreamCount is the reference count of active backend-api streams.
+  // >0 means at least one SSE stream is still open. Using a counter (not a
+  // boolean) prevents a short concurrent API call from falsely zeroing the flag
+  // while the real generation stream is still running.
   if (window.__hpaStreamInterceptorActive) {
-    return window.__hpaIsStreaming === true;
+    return (window.__hpaStreamCount || 0) > 0;
   }
 
   // ── Strategy 1: known data-testid / aria-label selectors (fallback) ──
