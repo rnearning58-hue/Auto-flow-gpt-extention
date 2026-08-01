@@ -202,27 +202,28 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 
   // ── Phase 2: Wait for streaming to fully END
   // Two independent signals — whichever fires first wins:
-  //   A) isStreaming() returns false (stop-button gone, send-button visible)
+  //   A) isStreaming() returns false (stop-button gone, voice/send-button visible)
   //   B) Content stability — reply text unchanged for 1.5 s
   //
-  // NOTE: action-button detection (isLastReplyDone) was removed — ChatGPT shows
-  // action buttons on previously-completed messages, and they can appear on the
-  // currently-streaming message's DOM node, causing false "done" readings.
+  // Safety net: if BOTH signals fail for 25 s and we have received content,
+  // proceed anyway rather than blocking the queue for up to 210 s.
   let lastContent = null;
   let stableStart = null;
   const STABLE_MS = 1500; // reply must be unchanged for this long → done
+  const phase2Start = Date.now();
+  const PHASE2_SAFETY_MS = 25000; // hard cap — don't wait more than 25 s
 
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
-    // Signal A: DOM-based streaming indicator (stop-button / send-button)
+    // Signal A: DOM-based streaming indicator (stop-button / voice-button / send-button)
     const s = await callPage('isStreaming', [], 10000);
     if (s.ok === true && s.result === false) {
-      // Double-check after 500 ms to rule out brief UI flickers
-      await delay(500);
+      // Brief pause to rule out transient UI state between stop→voice button swap
+      await delay(300);
       const s2 = await callPage('isStreaming', [], 10000);
       if (s2.ok === true && s2.result === false) {
-        return; // Confirmed: stop-button gone, send-button visible
+        return; // Confirmed: stop-button gone, ChatGPT idle
       }
     }
 
@@ -233,19 +234,22 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
     if (r.ok && r.result) {
       const content = r.result;
       if (content !== lastContent) {
-        // Content changed — reset the stability timer
         lastContent = content;
         stableStart = Date.now();
       } else if (stableStart !== null && Date.now() - stableStart >= STABLE_MS) {
-        // Content has been stable for STABLE_MS — streaming is done
-        return;
+        return; // Content stable for STABLE_MS — done
       }
+    }
+
+    // Safety net: if both signals kept failing but we do have content,
+    // don't block forever — proceed after PHASE2_SAFETY_MS.
+    if (lastContent && Date.now() - phase2Start > PHASE2_SAFETY_MS) {
+      return;
     }
 
     await delay(400);
   }
-  // Timeout reached — move on anyway (ChatGPT might still be generating,
-  // but we capture whatever has been output so far)
+  // Global timeout reached — move on with whatever output arrived
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────

@@ -335,14 +335,26 @@ function _sendPageStatus(status, extra = {}) {
 }
 
 function _isStreaming() {
-  // Specific stop-button selectors used by ChatGPT during active generation.
-  // NOTE: do NOT use broad selectors like aria-label*="Stop" — they match the
-  // voice-input stop button and cause false "still streaming" results.
+  // ── "Still generating" signals ──
+  // Only use very specific selectors — broad ones (e.g. aria-label*="Stop") match
+  // the voice-input stop button and cause false positives.
   if (document.querySelector('button[data-testid="stop-button"]')) return true;
   if (document.querySelector('[data-testid="stop-button"]')) return true;
   if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
   if (document.querySelector('button[aria-label="Stop generating"]')) return true;
-  if (document.querySelector('[class*="result-streaming"]')) return true;
+  // NOTE: [class*="result-streaming"] intentionally removed — in current ChatGPT
+  // builds this class persists on code blocks after generation ends, causing a
+  // permanent false "still streaming" state that blocks completion detection.
+
+  // ── "Done / idle" signals ──
+  // The voice/microphone input button appears in the composer ONLY when ChatGPT is
+  // idle (not generating). It is mutually exclusive with the stop button.
+  if (document.querySelector('button[data-testid="composer-speech-button"]')) return false;
+  if (document.querySelector('button[data-testid="voice-mode-button"]')) return false;
+  if (document.querySelector('button[data-testid="voice-mode-toggle"]')) return false;
+  if (document.querySelector('button[aria-label="Start voice input"]')) return false;
+  if (document.querySelector('button[aria-label="Use microphone"]')) return false;
+  if (document.querySelector('button[aria-label="Voice input"]')) return false;
 
   // If the send button is present and enabled, ChatGPT is ready → not streaming
   if (_findSendButton()) return false;
