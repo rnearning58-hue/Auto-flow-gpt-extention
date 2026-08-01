@@ -382,8 +382,7 @@ function _sendPageStatus(status, extra = {}) {
 
 // Find the single button that cycles between stop / send / idle states.
 // It is always the rightmost non-mic SVG button inside the composer input area.
-// This helper is selector-independent: it works even when ChatGPT changes
-// data-testid or aria-label values across UI updates.
+// Selector-independent: survives data-testid / aria-label changes.
 function _findComposerStateButton() {
   const input =
     document.querySelector('#prompt-textarea') ||
@@ -392,8 +391,6 @@ function _findComposerStateButton() {
     document.querySelector('div[contenteditable="true"]');
   if (!input) return null;
 
-  // Keywords that identify the mic/voice button — excluded so the state button
-  // (which is always to the RIGHT of the mic) is returned, never the mic itself.
   const voiceWords = ['mic', 'voice', 'speech', 'audio', 'dictate', 'record'];
 
   let container = input.parentElement;
@@ -406,8 +403,7 @@ function _findComposerStateButton() {
       return !voiceWords.some(w => label.includes(w) || testid.includes(w));
     });
     if (candidates.length >= 1) {
-      // Rightmost candidate is always the state-cycling button
-      return candidates[candidates.length - 1];
+      return candidates[candidates.length - 1]; // rightmost = state-cycling button
     }
     container = container.parentElement;
   }
@@ -416,22 +412,42 @@ function _findComposerStateButton() {
 
 function _isStreaming() {
   // ── Strategy 1: known data-testid / aria-label selectors (fast path) ──
-  // Tried first — when ChatGPT hasn't changed them these are instantaneous.
   if (document.querySelector('button[data-testid="stop-button"]')) return true;
   if (document.querySelector('[data-testid="stop-button"]'))        return true;
   if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
   if (document.querySelector('button[aria-label="Stop generating"]')) return true;
 
-  // ── Strategy 2: SVG structure detection (selector-independent, primary fix) ──
-  // The composer state button visual states:
-  //   • Generating  → white circle + BLACK SQUARE inside  → SVG contains <rect>
-  //   • Send-ready  → white circle + upward arrow         → SVG has no <rect>
-  //   • Idle / done → dark circle  + sound-wave lines     → SVG has no <rect>
-  // Checking for <rect> inside the SVG survives any data-testid/aria-label change.
+  // ── Strategy 2: composer state button visual inspection ──
+  // Three button states, two reliable visual signals:
+  //
+  //   State          | Background  | SVG rects
+  //   ───────────────|─────────────|──────────
+  //   Idle/sound-wave| DARK circle | 4+ rects (the vertical bars)
+  //   Stop (square)  | LIGHT circle| 1 rect   (the filled square)
+  //   Send (arrow)   | LIGHT circle| 0 rects  (path-based arrow)
+  //
+  // Signal A — background brightness: dark → idle → not streaming (most reliable)
+  // Signal B — SVG <rect> count: 1 → stop → streaming; 0 → send → not streaming
+  //            (>1 should already be caught by Signal A's darkness check)
   const stateBtn = _findComposerStateButton();
   if (stateBtn) {
-    if (stateBtn.querySelector('svg rect')) return true;  // stop button → still generating
-    return false; // send or idle/sound-wave button → not streaming
+    // Signal A: background colour
+    try {
+      const bg   = window.getComputedStyle(stateBtn).backgroundColor;
+      const vals = bg.match(/[\d.]+/g);
+      if (vals && vals.length >= 3) {
+        const brightness = (parseInt(vals[0]) + parseInt(vals[1]) + parseInt(vals[2])) / 3;
+        if (brightness < 100) return false; // dark circle → idle/sound-wave → not streaming
+        // brightness ≥ 100 → white circle → stop or send (need Signal B to distinguish)
+      }
+    } catch (_) {}
+
+    // Signal B: SVG <rect> count
+    const rectCount = stateBtn.querySelectorAll('svg rect').length;
+    if (rectCount === 1) return true;   // single filled square → stop button → streaming
+    if (rectCount === 0) return false;  // no rect (arrow path) → send button → not streaming
+    // rectCount > 1 → sound-wave bars (should have been caught by Signal A) → not streaming
+    return false;
   }
 
   // ── Strategy 3: known idle / done signals (fallback) ──
@@ -447,23 +463,45 @@ function _isStreaming() {
 }
 
 // Detect whether the last assistant reply has completed generation.
-// ChatGPT only adds action buttons (copy, thumbs up/down) AFTER streaming ends —
-// their presence is the most reliable "done" signal available.
+// ChatGPT only adds action buttons (copy, thumbs up/down) AFTER streaming ends.
+//
+// IMPORTANT: In some ChatGPT builds the action bar is a SIBLING of the content
+// div, not a child — it sits outside [data-message-author-role="assistant"].
+// We walk UP from the last assistant element, expanding the search container one
+// level at a time, but STOP as soon as the container would include more than one
+// assistant message (prevents false positives from previous replies' action bars).
 function _isLastReplyDone() {
   try {
     const els = document.querySelectorAll('[data-message-author-role="assistant"]');
     if (!els.length) return false;
     const last = els[els.length - 1];
-    return !!(
-      last.querySelector('button[data-testid="copy-turn-action-button"]') ||
-      last.querySelector('button[data-testid*="copy-turn"]') ||
-      last.querySelector('button[data-testid="thumbs-up-button"]') ||
-      last.querySelector('button[data-testid="thumbs-down-button"]') ||
-      last.querySelector('button[aria-label="Good response"]') ||
-      last.querySelector('button[aria-label="Bad response"]') ||
-      last.querySelector('button[aria-label="Copy"]') ||
-      last.querySelector('[data-testid="conversation-turn-action-bar"]')
-    );
+
+    function hasActionButton(root) {
+      return !!(
+        root.querySelector('button[data-testid="copy-turn-action-button"]') ||
+        root.querySelector('button[data-testid*="copy-turn"]') ||
+        root.querySelector('button[data-testid="thumbs-up-button"]') ||
+        root.querySelector('button[data-testid="thumbs-down-button"]') ||
+        root.querySelector('button[aria-label="Good response"]') ||
+        root.querySelector('button[aria-label="Bad response"]') ||
+        root.querySelector('button[aria-label="Copy"]') ||
+        root.querySelector('[data-testid="conversation-turn-action-bar"]')
+      );
+    }
+
+    // Walk upward from the last assistant element, up to 5 levels.
+    // Stop expanding if the container starts including OTHER assistant messages
+    // (that would risk matching action buttons from a previous reply).
+    let container = last;
+    for (let i = 0; i < 5; i++) {
+      if (hasActionButton(container)) return true;
+      const parent = container.parentElement;
+      if (!parent || parent === document.body) break;
+      // If parent contains more than one assistant element it's too broad — stop.
+      if (parent.querySelectorAll('[data-message-author-role="assistant"]').length > 1) break;
+      container = parent;
+    }
+    return false;
   } catch (_) { return false; }
 }
 
