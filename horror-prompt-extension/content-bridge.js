@@ -246,96 +246,70 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 
   // ── Phase 2: Wait for streaming to fully END
   // Two independent signals — whichever fires first wins:
-  //   A) isStreaming() returns false (stop-button gone, voice/send-button visible)
-  //   B) Content stability — NEW reply text unchanged for 1.5 s
+  //   A) isLastReplyDone() — action buttons (👍👎 copy) appeared on last reply.
+  //      PRIMARY signal. ChatGPT only renders these AFTER streaming is fully done.
+  //      Screenshot-verifiable. Immune to stop-button selector staleness — this is
+  //      the root cause of both known Phase 2 bugs:
+  //        • Signal A (old _isStreaming()==false) exited early → next scene sent while
+  //          still generating → voice button misclick (Problem 2).
+  //        • strict newContentSeen guard blocked by same selector staleness → loop
+  //          never exited even with complete output on screen (Problem 1).
+  //   B) Content stability — reply text unchanged for 1.5 s (fallback for edge cases
+  //      where action buttons render slowly or are not detected).
   //
-  // KEY INVARIANT: Signal B only starts counting once content has CHANGED from
-  // what was present at Phase 2 start. This prevents the bug where a slow/delayed
-  // network causes Phase 1 to fall through, Phase 2 reads the PREVIOUS scene's
-  // stable output, and exits prematurely — skipping the scene entirely.
+  // NOTE: _isStreaming() is intentionally NOT used as an exit signal in Phase 2.
+  // ChatGPT frequently changes stop-button testid/aria-label; when those selectors
+  // are stale, _isStreaming() returns false even while the model is still generating,
+  // which caused premature exits and the voice-button misclick.
 
-  // Capture whatever is in the last reply RIGHT NOW (before the new reply arrives).
-  // Signal B stability timer will not start until content diverges from this value.
+  // Capture the last reply content RIGHT NOW so Signal B's stability timer only
+  // starts once the reply has actually changed (prevents reading a stale prior scene).
   const initRes = await callPage('getLastReply', [], 10000);
   const initialContent = (initRes.ok && initRes.result) ? initRes.result : null;
 
   let lastContent = null;
   let stableStart = null;
-  let newContentSeen = false; // true once content has changed AND a new reply confirmed
-  const STABLE_MS = 1500;     // content must be unchanged for this long → done
-  const phase2Start = Date.now();
-  const PHASE2_SAFETY_MS = 30000; // safety cap — only fires if new content was seen
-
-  // Cache the reply count at Phase 2 start so we can verify new replies in the loop
-  // without an extra RPC on every iteration.
-  let cachedCountAfterSend = -1;
-  {
-    const cr = await callPage('getReplyCount', [], 8000);
-    if (cr.ok && cr.result != null) cachedCountAfterSend = cr.result;
-  }
+  // newContentSeen: flips true the moment reply content diverges from initialContent.
+  // We use a simple content-change check here (no strict count/Phase-1 guard) because
+  // _typeAndSend's _composerCleared() guarantee already ensures the previous scene is
+  // fully done before typeAndSend returns — so any content change IS the new scene.
+  let newContentSeen = false;
+  const STABLE_MS = 1500; // content must be unchanged for this long → done
 
   while (Date.now() < totalDeadline) {
     if (stopRequested) return;
 
-    // Signal A: DOM-based streaming indicator (stop-button / voice-button / send-button)
-    // Only trust "not streaming" if new content has appeared — guards against the case
-    // where ChatGPT hasn't started generating yet (no stop-button = "not streaming"
-    // before the response begins, which would be a false positive).
-    const s = await callPage('isStreaming', [], 10000);
-    if (s.ok === true && s.result === false && newContentSeen) {
-      // Brief pause to rule out transient UI state between stop→voice button swap
-      await delay(300);
-      const s2 = await callPage('isStreaming', [], 10000);
-      if (s2.ok === true && s2.result === false) {
-        return; // Confirmed: new reply fully received, ChatGPT now idle
+    // ── Signal A (PRIMARY): action buttons appeared on the last reply ─────────
+    // Only checked once newContentSeen is true (new reply text has appeared).
+    if (newContentSeen) {
+      const done = await callPage('isLastReplyDone', [], 10000);
+      if (done.ok && done.result === true) {
+        // Brief confirmation pause to rule out transient button flicker
+        await delay(300);
+        const done2 = await callPage('isLastReplyDone', [], 10000);
+        if (done2.ok && done2.result === true) {
+          return; // Action buttons confirmed — reply fully generated ✓
+        }
       }
     }
 
-    // Signal B: Content stability check
+    // ── Signal B (FALLBACK): content stability check ──────────────────────────
     const r = await callPage('getLastReply', [], 10000);
     if (r.ok && r.result) {
       const content = r.result;
 
-      // Detect when NEW content first appears (different from what was there before send).
-      //
-      // Extra guard against network-delay race condition:
-      // If the previous scene's reply was still streaming when typeAndSend returned,
-      // the previous reply's content will change here — but that should NOT be treated
-      // as the new scene's reply arriving.  We only accept a content change as "new"
-      // when we can confirm a genuinely NEW reply appeared (reply count increased),
-      // OR when Phase 1 already confirmed a new reply via the streaming indicator.
-      // In long conversations where ChatGPT virtualises old DOM nodes (count may not
-      // increase), we fall back to trusting Phase 1's newReplyAppeared flag.
       if (!newContentSeen && content !== initialContent) {
-        // Check if reply count increased since before we sent this scene.
-        // Re-read the count here (not cached from Phase 1) for freshness.
-        const verifyRes = await callPage('getReplyCount', [], 8000);
-        const verifyCount = (verifyRes.ok && verifyRes.result != null) ? verifyRes.result : -1;
-        const countRose = beforeCount >= 0 && verifyCount > beforeCount;
-
-        if (newReplyAppeared || countRose) {
-          // Confirmed: this content change belongs to the new reply, not the old one.
-          newContentSeen = true;
-          if (verifyCount > cachedCountAfterSend) cachedCountAfterSend = verifyCount;
-        }
-        // If neither signal fired yet: keep waiting — don't flip newContentSeen.
+        newContentSeen = true;
       }
 
-      // Only run the stability timer after new content has arrived
       if (newContentSeen) {
         if (content !== lastContent) {
           lastContent = content;
           stableStart = Date.now();
         } else if (stableStart !== null && Date.now() - stableStart >= STABLE_MS) {
-          return; // New content stable for STABLE_MS — streaming done
+          return; // Content stable for STABLE_MS → streaming done ✓
         }
       }
-    }
-
-    // Safety net: only applies once new content has been seen.
-    // If network is slow and no new content yet, keep waiting (don't skip the scene).
-    if (newContentSeen && Date.now() - phase2Start > PHASE2_SAFETY_MS) {
-      return;
     }
 
     await delay(400);
