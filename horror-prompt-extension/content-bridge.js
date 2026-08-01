@@ -105,11 +105,19 @@ async function runAutomation(masterPrompt, storyText, scenes) {
       let output = '';
 
       try {
-        // ── Get reply count BEFORE sending — so we can verify a NEW reply appeared
+        // ── Get reply count AND last reply content BEFORE sending ─────────────
+        // beforeCount: detect new reply via DOM node count (fast path, fails when virtualised)
+        // beforeContent: detect new reply via content change (works even when virtualised
+        //   because we compare DOM text directly — immune to ChatGPT's node recycling).
         const beforeCountRes = await callPage('getReplyCount', [], 10000);
         const beforeCount = (beforeCountRes.ok && beforeCountRes.result != null)
           ? beforeCountRes.result
           : -1;
+
+        const beforeContentRes = await callPage('getLastReply', [], 10000);
+        const beforeContent = (beforeContentRes.ok && beforeContentRes.result)
+          ? beforeContentRes.result
+          : null;
 
         // Send scene number + full scene text.
         // Use a 12-minute RPC timeout (> the 10-min page-side _clickSend wait) so the
@@ -129,7 +137,7 @@ async function runAutomation(masterPrompt, storyText, scenes) {
         });
 
         // Wait for a NEW reply to appear and fully stream
-        await waitForNewReplyComplete(beforeCount, 210);
+        await waitForNewReplyComplete(beforeCount, 210, beforeContent);
         if (stopRequested) return;
 
         const replyRes = await callPage('getLastReply', [], 10000);
@@ -163,19 +171,27 @@ async function sendAndWaitForReply(text, timeoutSec = 90) {
     ? beforeCountRes.result
     : -1;
 
+  // Capture the last reply's text BEFORE sending — Phase 2 uses this to know
+  // when a genuinely NEW reply has appeared in the DOM (not the old one).
+  const beforeContentRes = await callPage('getLastReply', [], 10000);
+  const beforeContent = (beforeContentRes.ok && beforeContentRes.result)
+    ? beforeContentRes.result
+    : null;
+
   // 12-minute RPC timeout — must exceed the 10-min page-side _clickSend wait so the
   // bridge never cancels a still-running file upload and reports a false failure.
   const res = await callPage('typeAndSend', [text], 720000);
   if (!res.ok) throw new Error(res.error || 'Message পাঠানো যায়নি');
-  await waitForNewReplyComplete(beforeCount, timeoutSec);
+  await waitForNewReplyComplete(beforeCount, timeoutSec, beforeContent);
 }
 
 // ── New reliable reply-waiting logic ──────────────────────────────────────
 
 // Wait for a brand-new reply to appear (count increases) then wait for it to finish streaming.
-// beforeCount: number of assistant messages that existed BEFORE sending.
-// This guarantees we never read a stale/previous reply.
-async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
+// beforeCount:   number of assistant messages that existed BEFORE sending.
+// beforeContent: text of the last reply BEFORE sending — used to detect the new reply by
+//                content change when DOM virtualisation keeps the count from increasing.
+async function waitForNewReplyComplete(beforeCount, timeoutSec = 210, beforeContent = null) {
   const totalDeadline = Date.now() + timeoutSec * 1000;
 
   // ── Phase 1: Wait for a NEW reply message to appear in the DOM (up to 30s)
@@ -269,19 +285,47 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 
   let lastContent = null;
   let stableStart = null;
-  // newContentSeen: true once we know the new reply's text is in the DOM.
+  // newContentSeen: true once the NEW scene's reply text is actually in the DOM.
   //
-  // KEY FIX: When Phase 1 confirmed newReplyAppeared=true, initialContent IS already
-  // the new scene's reply (ChatGPT may have finished generating before Phase 2 even
-  // started — fast network). In that case content will NEVER change, so the old
-  // "wait for content to differ from initialContent" guard would keep newContentSeen
-  // false forever and none of Signals A/B/C would ever fire → infinite wait bug.
+  // ── Root cause of two bugs this logic fixes ──────────────────────────────
   //
-  // Solution: pre-set newContentSeen=true whenever Phase 1 confirmed the reply exists.
-  // Only keep it false when Phase 1 was inconclusive (virtualised long conversation
-  // where neither count rise nor streaming transition was detected) — in that case we
-  // still need the content-change heuristic to avoid acting on a stale prior reply.
-  let newContentSeen = newReplyAppeared && initialContent !== null;
+  // BUG A — "scene complete too early" (first scene in screenshot):
+  //   Phase 1 sees streaming start → newReplyAppeared=true → old code set
+  //   newContentSeen=true immediately. But in virtualised 40+ turn convos the
+  //   new reply DOM node hasn't rendered yet; last DOM element is still the
+  //   PREVIOUS scene's reply with its action buttons already visible.
+  //   Signal A fires on those old buttons → loop exits → extension marks done
+  //   while ChatGPT is still generating.
+  //
+  // BUG B — "waiting forever" (second scene in screenshot):
+  //   ChatGPT responded so fast that generate was complete before Phase 1 even
+  //   ran. Phase 1 saw streaming=false, count didn't increase (virtualised) →
+  //   newReplyAppeared=false → old code set newContentSeen=false. In Phase 2
+  //   initialContent = the already-complete new reply; it never changes →
+  //   newContentSeen never becomes true → loop runs until 210s timeout.
+  //
+  // ── Fix: compare against beforeContent ───────────────────────────────────
+  //   beforeContent = last reply text captured BEFORE typeAndSend was called.
+  //   initialContent = last reply text captured at Phase 2 start (may be same
+  //   as beforeContent if virtualised, or already the new reply if fast network).
+  //
+  //   newContentSeen = true  iff  initialContent already differs from beforeContent
+  //   → the new reply rendered before Phase 2 started (fast generation). ✓
+  //   newContentSeen = false iff  initialContent === beforeContent
+  //   → DOM still shows the old reply; wait for content to change. ✓
+  //
+  //   This handles both bugs:
+  //   • BUG A: initialContent===beforeContent (old reply) → newContentSeen=false
+  //     → Signals A/C blocked until content actually changes. ✓
+  //   • BUG B: initialContent!==beforeContent (new reply already done)
+  //     → newContentSeen=true immediately → Signal A fires on correct reply. ✓
+  //
+  // Edge cases:
+  //   • beforeContent===null (very first reply ever): any non-null initialContent
+  //     counts as new. ✓
+  //   • initialContent===null: DOM has no reply yet; wait as before. ✓
+  let newContentSeen = initialContent !== null &&
+                       (beforeContent === null || initialContent !== beforeContent);
   const STABLE_MS = 1500; // content must be unchanged for this long → done
 
   while (Date.now() < totalDeadline) {
