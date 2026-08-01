@@ -293,6 +293,24 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
       }
     }
 
+    // ── Signal C (SECONDARY): composer state button shows idle / done ─────────
+    // Uses the new SVG-based _isStreaming() which detects the stop button by its
+    // <rect> element rather than data-testid/aria-label (selector-independent).
+    // Sound-wave button (🔵) visible = idle = generation complete.
+    // Requires two consecutive false readings 600 ms apart to guard against the
+    // brief visual transition between stop → send → idle states.
+    // Only active once newContentSeen is true so we never exit on a stale prior state.
+    if (newContentSeen) {
+      const s1 = await callPage('isStreaming', [], 8000);
+      if (s1.ok && s1.result === false) {
+        await delay(600);
+        const s2 = await callPage('isStreaming', [], 8000);
+        if (s2.ok && s2.result === false) {
+          return; // Idle/sound-wave button confirmed twice → generation complete ✓
+        }
+      }
+    }
+
     // ── Signal B (FALLBACK): content stability check ──────────────────────────
     const r = await callPage('getLastReply', [], 10000);
     if (r.ok && r.result) {

@@ -380,29 +380,67 @@ function _sendPageStatus(status, extra = {}) {
   } catch (_) {}
 }
 
+// Find the single button that cycles between stop / send / idle states.
+// It is always the rightmost non-mic SVG button inside the composer input area.
+// This helper is selector-independent: it works even when ChatGPT changes
+// data-testid or aria-label values across UI updates.
+function _findComposerStateButton() {
+  const input =
+    document.querySelector('#prompt-textarea') ||
+    document.querySelector('div[contenteditable="true"][id*="prompt"]') ||
+    document.querySelector('div[contenteditable="true"].ProseMirror') ||
+    document.querySelector('div[contenteditable="true"]');
+  if (!input) return null;
+
+  // Keywords that identify the mic/voice button — excluded so the state button
+  // (which is always to the RIGHT of the mic) is returned, never the mic itself.
+  const voiceWords = ['mic', 'voice', 'speech', 'audio', 'dictate', 'record'];
+
+  let container = input.parentElement;
+  for (let depth = 0; depth < 8 && container && container !== document.body; depth++) {
+    const buttons = Array.from(container.querySelectorAll('button'));
+    const candidates = buttons.filter(btn => {
+      if (!btn.querySelector('svg')) return false;
+      const label  = (btn.getAttribute('aria-label')   || '').toLowerCase();
+      const testid = (btn.getAttribute('data-testid')  || '').toLowerCase();
+      return !voiceWords.some(w => label.includes(w) || testid.includes(w));
+    });
+    if (candidates.length >= 1) {
+      // Rightmost candidate is always the state-cycling button
+      return candidates[candidates.length - 1];
+    }
+    container = container.parentElement;
+  }
+  return null;
+}
+
 function _isStreaming() {
-  // ── "Still generating" signals ──
-  // Only use very specific selectors — broad ones (e.g. aria-label*="Stop") match
-  // the voice-input stop button and cause false positives.
+  // ── Strategy 1: known data-testid / aria-label selectors (fast path) ──
+  // Tried first — when ChatGPT hasn't changed them these are instantaneous.
   if (document.querySelector('button[data-testid="stop-button"]')) return true;
-  if (document.querySelector('[data-testid="stop-button"]')) return true;
+  if (document.querySelector('[data-testid="stop-button"]'))        return true;
   if (document.querySelector('button[aria-label="Stop streaming"]')) return true;
   if (document.querySelector('button[aria-label="Stop generating"]')) return true;
-  // NOTE: [class*="result-streaming"] intentionally removed — in current ChatGPT
-  // builds this class persists on code blocks after generation ends, causing a
-  // permanent false "still streaming" state that blocks completion detection.
 
-  // ── "Done / idle" signals ──
-  // The voice/microphone input button appears in the composer ONLY when ChatGPT is
-  // idle (not generating). It is mutually exclusive with the stop button.
+  // ── Strategy 2: SVG structure detection (selector-independent, primary fix) ──
+  // The composer state button visual states:
+  //   • Generating  → white circle + BLACK SQUARE inside  → SVG contains <rect>
+  //   • Send-ready  → white circle + upward arrow         → SVG has no <rect>
+  //   • Idle / done → dark circle  + sound-wave lines     → SVG has no <rect>
+  // Checking for <rect> inside the SVG survives any data-testid/aria-label change.
+  const stateBtn = _findComposerStateButton();
+  if (stateBtn) {
+    if (stateBtn.querySelector('svg rect')) return true;  // stop button → still generating
+    return false; // send or idle/sound-wave button → not streaming
+  }
+
+  // ── Strategy 3: known idle / done signals (fallback) ──
   if (document.querySelector('button[data-testid="composer-speech-button"]')) return false;
-  if (document.querySelector('button[data-testid="voice-mode-button"]')) return false;
-  if (document.querySelector('button[data-testid="voice-mode-toggle"]')) return false;
-  if (document.querySelector('button[aria-label="Start voice input"]')) return false;
-  if (document.querySelector('button[aria-label="Use microphone"]')) return false;
-  if (document.querySelector('button[aria-label="Voice input"]')) return false;
-
-  // If the send button is present and enabled, ChatGPT is ready → not streaming
+  if (document.querySelector('button[data-testid="voice-mode-button"]'))      return false;
+  if (document.querySelector('button[data-testid="voice-mode-toggle"]'))      return false;
+  if (document.querySelector('button[aria-label="Start voice input"]'))       return false;
+  if (document.querySelector('button[aria-label="Use microphone"]'))          return false;
+  if (document.querySelector('button[aria-label="Voice input"]'))             return false;
   if (_findSendButton()) return false;
 
   return false;
