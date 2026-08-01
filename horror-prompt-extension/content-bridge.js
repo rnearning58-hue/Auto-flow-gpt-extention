@@ -269,11 +269,19 @@ async function waitForNewReplyComplete(beforeCount, timeoutSec = 210) {
 
   let lastContent = null;
   let stableStart = null;
-  // newContentSeen: flips true the moment reply content diverges from initialContent.
-  // We use a simple content-change check here (no strict count/Phase-1 guard) because
-  // _typeAndSend's _composerCleared() guarantee already ensures the previous scene is
-  // fully done before typeAndSend returns — so any content change IS the new scene.
-  let newContentSeen = false;
+  // newContentSeen: true once we know the new reply's text is in the DOM.
+  //
+  // KEY FIX: When Phase 1 confirmed newReplyAppeared=true, initialContent IS already
+  // the new scene's reply (ChatGPT may have finished generating before Phase 2 even
+  // started — fast network). In that case content will NEVER change, so the old
+  // "wait for content to differ from initialContent" guard would keep newContentSeen
+  // false forever and none of Signals A/B/C would ever fire → infinite wait bug.
+  //
+  // Solution: pre-set newContentSeen=true whenever Phase 1 confirmed the reply exists.
+  // Only keep it false when Phase 1 was inconclusive (virtualised long conversation
+  // where neither count rise nor streaming transition was detected) — in that case we
+  // still need the content-change heuristic to avoid acting on a stale prior reply.
+  let newContentSeen = newReplyAppeared && initialContent !== null;
   const STABLE_MS = 1500; // content must be unchanged for this long → done
 
   while (Date.now() < totalDeadline) {
